@@ -4,7 +4,7 @@ Usage:
     python3 main.py <input_video_path> [options]
 
 Options:
-    --output-dir DIR        Directory for output clips (default: output)
+    --output-dir DIR        Directory for output clips (default: <input_folder>/highlights)
     --whisper-model MODEL   Whisper model size: tiny/base/small/medium/large (default: base)
     --top-n N               Number of highlight clips to generate (default: 5)
     --llm                   Enable local LLM scoring via Ollama (default: disabled)
@@ -16,6 +16,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import tempfile
@@ -127,8 +128,8 @@ def main() -> None:
         epilog="Example:\n  python3 main.py input.mp4 --top-n 3 --whisper-model small",
     )
     parser.add_argument("input_video", help="Path to the input video file")
-    parser.add_argument("--output-dir", default="output",
-                        help="Directory for output clips (default: output)")
+    parser.add_argument("--output-dir", default=None,
+                        help="Directory for output clips (default: <input_video_folder>/highlights)")
     parser.add_argument("--whisper-model", default="base",
                         choices=["tiny", "base", "small", "medium", "large"],
                         help="Whisper model size (default: base)")
@@ -146,6 +147,12 @@ def main() -> None:
     args = parser.parse_args()
 
     work_dir = tempfile.mkdtemp(prefix="highlight_")
+
+    # Default output dir: a "highlights" folder next to the input video
+    if args.output_dir is None:
+        input_dir = os.path.dirname(os.path.abspath(args.input_video))
+        args.output_dir = os.path.join(input_dir, "highlights")
+
     config = build_config(args, work_dir)
 
     print(f"Input:      {args.input_video}")
