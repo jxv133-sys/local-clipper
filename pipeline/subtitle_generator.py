@@ -164,7 +164,10 @@ def generate_subtitles(
 
 
 def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
-    """Use FFmpeg to burn an SRT subtitle file into a video.
+    """Burn SRT subtitles into a video using FFmpeg drawtext filter.
+
+    Uses drawtext instead of the subtitles filter to avoid requiring libass,
+    which is not included in the standard Homebrew FFmpeg build.
 
     Args:
         video_path: Path to the input video file.
@@ -174,37 +177,62 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
     Raises:
         SubtitleError: If FFmpeg exits with a non-zero return code.
     """
-    import shutil
-    import tempfile
+    # Parse the SRT file to get timed text entries
+    with open(srt_path, "r", encoding="utf-8") as fh:
+        entries = parse_srt(fh.read())
 
-    # FFmpeg's subtitles filter has strict escaping rules that vary by platform.
-    # The safest approach: copy the SRT to a temp file with a simple name
-    # (no spaces, colons, or special chars) and use that path.
-    with tempfile.NamedTemporaryFile(suffix=".srt", delete=False, dir=tempfile.gettempdir()) as tmp:
-        tmp_srt = tmp.name
+    if not entries:
+        # No subtitles — just copy the video as-is
+        import shutil
+        shutil.copy2(video_path, output_path)
+        return
 
-    try:
-        shutil.copy2(srt_path, tmp_srt)
+    # Build a drawtext filter chain — one drawtext per subtitle entry.
+    # Each entry is shown only during its time window using 'enable' expression.
+    filter_parts: list[str] = []
+    for entry in entries:
+        # Escape text for FFmpeg drawtext: backslash, colon, single quote, newline
+        text = entry.text.strip()
+        text = text.replace("\\", "\\\\")
+        text = text.replace("'", "\\'")
+        text = text.replace(":", "\\:")
+        text = text.replace("\n", " ")
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", video_path,
-            "-vf", f"subtitles={tmp_srt}",
-            "-c:a", "copy",
-            output_path,
-        ]
+        start_s = entry.start
+        end_s = entry.end
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        filter_parts.append(
+            f"drawtext=text='{text}'"
+            f":fontsize=24"
+            f":fontcolor=white"
+            f":borderw=2"
+            f":bordercolor=black"
+            f":x=(w-text_w)/2"
+            f":y=h-th-40"
+            f":enable='between(t,{start_s:.3f},{end_s:.3f})'"
         )
-    finally:
-        try:
-            os.unlink(tmp_srt)
-        except OSError:
-            pass
+
+    # Chain all drawtext filters together
+    vf = ",".join(filter_parts)
+
+    # Use full path to ffmpeg since it may not be on PATH in all environments
+    import shutil as _shutil
+    ffmpeg_bin = _shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-i", video_path,
+        "-vf", vf,
+        "-c:a", "copy",
+        output_path,
+    ]
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
     if result.returncode != 0:
         raise SubtitleError(
