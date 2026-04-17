@@ -6,7 +6,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
 
 ## Tasks
 
-- [~] 1. Set up project structure, data models, and configuration
+- [x] 1. Set up project structure, data models, and configuration
   - Create the `pipeline/` package directory with `__init__.py`
   - Create `config.py` with the `Config` dataclass and all default values (weights, keywords, paths, Whisper model, LLM settings, clip count, durations)
   - Create `pipeline/models.py` (or inline in each module) with `Segment`, `Transcript`, `ScoredSegment`, `Clip`, and `SRTEntry` dataclasses
@@ -23,7 +23,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - `@settings(max_examples=100)`
     - **Validates: Requirements 2.7**
 
-- [~] 2. Implement Audio Extractor (`pipeline/audio_extractor.py`)
+- [x] 2. Implement Audio Extractor (`pipeline/audio_extractor.py`)
   - Implement `extract_audio(config: Config, video_path: str) -> str`
   - Check that `video_path` exists; raise `FileNotFoundError` with a descriptive message if not
   - Detect missing FFmpeg on PATH; raise `AudioExtractionError` if `ffmpeg` is not found
@@ -42,7 +42,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: FFmpeg non-zero exit → `AudioExtractionError` with stderr in message
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
-- [~] 3. Implement Transcriber (`pipeline/transcriber.py`)
+- [x] 3. Implement Transcriber (`pipeline/transcriber.py`)
   - Implement `transcribe(config: Config, wav_path: str) -> Transcript`
   - Check that `wav_path` exists; raise `FileNotFoundError` with a descriptive message if not
   - Load the Whisper model via `whisper.load_model(config.whisper_model)` and call `.transcribe(wav_path, word_timestamps=True)`
@@ -60,7 +60,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: JSON file round-trips correctly (deserialize and compare)
     - _Requirements: 2.1, 2.3, 2.4, 2.5, 2.6_
 
-- [~] 4. Implement Scorer — text and combination logic (`pipeline/scorer.py`)
+- [x] 4. Implement Scorer — text and combination logic (`pipeline/scorer.py`)
   - Implement `compute_text_score(config: Config, segment: Segment) -> float`
     - Add score for each keyword occurrence in `segment.text` (case-insensitive)
     - Add score proportional to character length of `segment.text`
@@ -113,7 +113,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: `combine_scores` with `llm=None` and `llm_weight=0.0` → same as text+audio only
     - _Requirements: 3.2, 3.3, 3.4, 6.1, 6.2_
 
-- [~] 5. Implement Scorer — audio score (`pipeline/scorer.py`, continued)
+- [x] 5. Implement Scorer — audio score (`pipeline/scorer.py`, continued)
   - Implement `compute_audio_score(segments: list[Segment], wav_path: str) -> list[float]`
     - Load the WAV file with `scipy.io.wavfile` or `wave` + `numpy`
     - For each segment, slice the audio samples corresponding to `[start, end]` seconds
@@ -135,7 +135,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: segment time range outside WAV duration → audio score 0.0
     - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
-- [ ] 6. Implement Scorer — LLM score and full `score_segments` assembly (`pipeline/scorer.py`, continued)
+- [x] 6. Implement Scorer — LLM score and full `score_segments` assembly (`pipeline/scorer.py`, continued)
   - Implement `compute_llm_score(config: Config, segment: Segment) -> float`
     - POST segment text to `config.llm_endpoint` with `config.llm_model`
     - Parse response to extract a numeric value in [1, 10]; normalize to [0.0, 1.0] by dividing by 10
@@ -163,10 +163,10 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: `llm_enabled=False` → `compute_llm_score` not called; `clip_score` uses only text + audio
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
 
-- [ ] 7. Checkpoint — Ensure all scorer and transcriber tests pass
+- [x] 7. Checkpoint — Ensure all scorer and transcriber tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 8. Implement Clip Selector (`pipeline/clip_selector.py`)
+- [x] 8. Implement Clip Selector (`pipeline/clip_selector.py`)
   - Implement `select_clips(config: Config, scored_segments: list[ScoredSegment], transcript: Transcript, video_duration: float) -> list[Clip]`
   - Sort `scored_segments` in descending order by `clip_score`
   - Select the top `config.top_n_clips` segments
@@ -198,7 +198,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: two overlapping clips that would exceed 45 s → higher-scoring clip retained, lower discarded
     - _Requirements: 7.2, 7.3, 7.4, 7.5, 7.6, 7.7_
 
-- [ ] 9. Implement Clip Extractor (`pipeline/clip_extractor.py`)
+- [x] 9. Implement Clip Extractor (`pipeline/clip_extractor.py`)
   - Implement `extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[str]`
   - Create `config.output_dir` if it does not exist
   - For each clip, attempt stream-copy extraction with FFmpeg (`-c copy`)
@@ -216,7 +216,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: FFmpeg non-zero exit → `ClipExtractionError` with stderr in message
     - _Requirements: 8.2, 8.3, 8.5, 8.6, 8.7_
 
-- [ ] 10. Implement Subtitle Generator (`pipeline/subtitle_generator.py`)
+- [x] 10. Implement Subtitle Generator (`pipeline/subtitle_generator.py`)
   - Implement SRT serialization: given a list of `SRTEntry` objects, produce a valid SRT string
   - Implement SRT parsing: given an SRT string, return a list of `SRTEntry` objects
   - Implement `generate_subtitles(config: Config, clips: list[Clip], transcript: Transcript, clip_paths: list[str]) -> list[str]`
@@ -256,10 +256,10 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: FFmpeg non-zero exit during subtitle burn → `SubtitleError` with stderr in message
     - _Requirements: 9.2, 9.4, 9.5, 9.7_
 
-- [ ] 11. Checkpoint — Ensure all clip selector, extractor, and subtitle tests pass
+- [-] 11. Checkpoint — Ensure all clip selector, extractor, and subtitle tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 12. Implement Pipeline Orchestrator (`main.py`)
+- [~] 12. Implement Pipeline Orchestrator (`main.py`)
   - Parse CLI arguments; if `<input_video_path>` is missing, print usage to stderr and exit with code 1
   - Load `Config` with defaults; allow overrides via CLI flags or environment variables as appropriate
   - Create a temporary working directory and set `config.work_dir`
@@ -277,7 +277,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: successful run → temp dir deleted, clip paths printed to stdout
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7_
 
-- [ ] 13. Final checkpoint — Ensure all tests pass
+- [~] 13. Final checkpoint — Ensure all tests pass
   - Run `pytest tests/` and confirm all unit and property-based tests pass.
   - Ensure all tests pass, ask the user if questions arise.
 

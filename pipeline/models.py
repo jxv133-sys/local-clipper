@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class Segment:
+    """A single transcript segment with timing and text."""
+    start: float   # seconds
+    end: float     # seconds
+    text: str
+
+
+@dataclass
+class Transcript:
+    """A collection of transcript segments with serialization support."""
+    segments: list[Segment]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the Transcript to a JSON-compatible dictionary."""
+        return {
+            "segments": [
+                {"start": seg.start, "end": seg.end, "text": seg.text}
+                for seg in self.segments
+            ]
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Transcript":
+        """Deserialize a Transcript from a dictionary."""
+        segments = [
+            Segment(start=s["start"], end=s["end"], text=s["text"])
+            for s in data.get("segments", [])
+        ]
+        return cls(segments=segments)
+
+
+@dataclass
+class ScoredSegment:
+    """A transcript segment with computed scores."""
+    segment: Segment
+    text_score: float    # [0.0, 1.0]
+    audio_score: float   # [0.0, 1.0]
+    llm_score: float     # [0.0, 1.0], 0.0 if LLM disabled
+    clip_score: float    # weighted combination
+
+
+@dataclass
+class Clip:
+    """A selected video clip with timing, score, and source segment references."""
+    start: float              # seconds, >= 0.0
+    end: float                # seconds, <= video_duration
+    score: float              # clip_score of the seed segment
+    rank: int                 # 1-based rank by score
+    segment_indices: list[int]  # indices into transcript.segments
+
+
+@dataclass
+class SRTEntry:
+    """A single entry in an SRT subtitle file."""
+    index: int
+    start: float   # seconds, relative to clip start
+    end: float     # seconds, relative to clip start
+    text: str
