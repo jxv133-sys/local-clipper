@@ -52,25 +52,24 @@ def compute_text_score(config: Config, segment: Segment) -> float:
     # Keyword occurrences (case-insensitive)
     for keyword in config.keywords:
         keyword_lower = keyword.lower()
-        # Count non-overlapping occurrences
         start = 0
         while True:
             idx = text_lower.find(keyword_lower, start)
             if idx == -1:
                 break
-            raw_score += 1.0
+            raw_score += 2.0          # raised from 1.0 — keywords are strong signals
             start = idx + len(keyword_lower)
 
-    # Character length reward
-    raw_score += len(text) * 0.01
+    # Character length reward — longer speech = more content
+    raw_score += len(text) * 0.02     # raised from 0.01
 
     # Punctuation reward
-    raw_score += text.count("!") * 1.0
+    raw_score += text.count("!") * 1.5   # raised from 1.0
     raw_score += text.count("?") * 1.0
 
-    # Normalize using shifted sigmoid: (2 / (1 + exp(-raw/10))) - 1
-    # This maps raw=0 → 0.0 and increases monotonically toward 1.0
-    score = (2.0 / (1.0 + math.exp(-raw_score / 10.0))) - 1.0
+    # Normalize using shifted sigmoid: (2 / (1 + exp(-raw/5))) - 1
+    # Divisor lowered from 10.0 to 5.0 so scores spread more meaningfully
+    score = (2.0 / (1.0 + math.exp(-raw_score / 5.0))) - 1.0
 
     # Clamp to [0.0, 1.0] for safety
     return max(0.0, min(1.0, score))

@@ -90,6 +90,13 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     cfg.llm_model = args.llm_model
     if args.keywords:
         cfg.keywords = args.keywords
+
+    # When LLM is enabled, give it real weight and reduce text/audio proportionally
+    if cfg.llm_enabled:
+        cfg.llm_weight = 0.4
+        cfg.text_weight = 0.35
+        cfg.audio_weight = 0.25
+
     return cfg
 
 
@@ -184,6 +191,7 @@ def main() -> None:
     print(f"Whisper:    {config.whisper_model}")
     print(f"Top N:      {config.top_n_clips}")
     print(f"LLM:        {'enabled (' + config.llm_model + ')' if config.llm_enabled else 'disabled'}")
+    print(f"Weights:    text={config.text_weight:.2f}  audio={config.audio_weight:.2f}  llm={config.llm_weight:.2f}")
     print()
 
     try:
