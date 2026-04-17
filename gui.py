@@ -8,11 +8,25 @@ from __future__ import annotations
 import os
 import queue
 import shutil
+import ssl
 import sys
 import tempfile
 import threading
 import tkinter as tk
 from tkinter import filedialog, font, messagebox, scrolledtext, ttk
+
+# Ensure FFmpeg (Homebrew) is on PATH regardless of how the script is launched
+_HOMEBREW_BIN = "/opt/homebrew/bin"
+if _HOMEBREW_BIN not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _HOMEBREW_BIN + ":" + os.environ.get("PATH", "")
+
+# Fix SSL certificate verification on macOS Python.org builds
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except ImportError:
+    os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
 
 # ---------------------------------------------------------------------------
 # Pipeline imports (same as main.py)

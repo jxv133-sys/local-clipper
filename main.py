@@ -18,9 +18,24 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import ssl
 import sys
 import tempfile
 import time
+
+# Ensure FFmpeg (Homebrew) is on PATH regardless of how the script is launched
+_HOMEBREW_BIN = "/opt/homebrew/bin"
+if _HOMEBREW_BIN not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _HOMEBREW_BIN + ":" + os.environ.get("PATH", "")
+
+# Fix SSL certificate verification on macOS Python.org builds
+# (required for Whisper model download on first run)
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except ImportError:
+    os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
 
 from config import Config
 from pipeline.audio_extractor import extract_audio
