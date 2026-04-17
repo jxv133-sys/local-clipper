@@ -33,6 +33,14 @@ def _make_fake_model(result: dict) -> MagicMock:
     return model
 
 
+# Force all tests to use the openai-whisper fallback path so we can mock it.
+# faster-whisper is tested separately; these tests cover the core transcribe() logic.
+@pytest.fixture(autouse=True)
+def use_openai_whisper_backend():
+    with patch("pipeline.transcriber._FASTER_WHISPER_AVAILABLE", False):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
