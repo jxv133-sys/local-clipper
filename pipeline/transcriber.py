@@ -84,18 +84,15 @@ def _transcribe_faster_whisper(config: Config, wav_path: str) -> list[Segment]:
             f"Failed to load faster-whisper model '{config.whisper_model}': {exc}"
         ) from exc
 
-    # num_workers uses all available CPU cores for parallel decoding
-    import multiprocessing
-    num_workers = max(1, multiprocessing.cpu_count() - 1)
-
+    # num_workers is not supported in all versions — use beam_size for speed
     raw_segments, _info = model.transcribe(
         wav_path,
         word_timestamps=True,
-        num_workers=num_workers,
         vad_filter=True,          # skip silent sections — big speedup
         vad_parameters=dict(
             min_silence_duration_ms=500,
         ),
+        beam_size=1,              # greedy decoding — faster, minimal accuracy loss
     )
 
     # faster-whisper returns a generator — consume it
