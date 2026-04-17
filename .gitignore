@@ -1,6 +1,11 @@
 # Test footage and large media files
 test-footage/
 output/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wav
 
 # Python
 __pycache__/
