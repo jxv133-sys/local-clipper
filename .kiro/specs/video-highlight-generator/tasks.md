@@ -47,36 +47,77 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
   - File picker, options panel, live progress log, results panel with open/why-chosen buttons
 
 - [x] 15. Verify subtitle burn works end-to-end on real footage
-  - Run pipeline on test footage and confirm subtitles are visible in output clips
-  - The temp-path fix in `_burn_subtitles` must be confirmed working
-  - If still failing, investigate FFmpeg `libass` availability on this system
 
 - [x] 16. Clean up stray files and fix SSL workaround
-  - Delete `clip_why_chosen.txt` from project root (stray file from a test run)
-  - Bake `PYTHONHTTPSVERIFY=0` into `gui.py` and `main.py` so users don't need to set it manually
-  - Add `output/` directory cleanup (currently has a stray `.DS_Store`)
 
 - [x] 17. Write README.md with setup and usage instructions
-  - Installation steps: FFmpeg via Homebrew, pip dependencies, SSL cert fix
-  - How to run CLI: `python3 main.py input.mp4 --top-n 3`
-  - How to run GUI: `python3 gui.py`
-  - Description of output files (clips, SRT, why-chosen reports)
-  - Known limitations (CPU-only Whisper speed, subtitle font requires libass)
 
 - [x] 18. Final end-to-end test on real footage
-  - Run full pipeline via GUI on `WATERPARK-SIMULATOR-DAY-4.mp4`
-  - Confirm 3 clips exported to `~/Desktop/test-footage/highlights/`
-  - Confirm subtitles are burned in and readable
-  - Confirm why-chosen `.txt` files are accurate
-  - Run `pytest tests/` — all 128 tests must pass
+
+- [ ] 19. Replace tkinter GUI with web UI hosted at localhost:6800 (`web/`)
+  - Replace `gui.py` with a Flask/FastAPI web server
+  - Frontend: single HTML page with vanilla JS (no build step required)
+  - Features:
+    - Video file upload (drag-and-drop + browse button)
+    - Options panel: Whisper model, top N, keywords, LLM toggle + model name, output dir
+    - Live progress log streamed via Server-Sent Events (SSE) — one line per stage event
+    - Results panel: list of completed clips with download links and why-chosen text inline
+    - Job queue: support multiple jobs, show status (queued / running / done / failed)
+  - Server runs on `0.0.0.0:6800` so it's accessible from other machines on the network
+  - Uploaded videos saved to a configurable `uploads/` directory on the server
+  - Completed clips served as static files for download
+  - Keep `main.py` CLI working unchanged — web server calls the same pipeline functions
+
+- [ ] 20. Add verbose logging throughout the pipeline
+  - Add a `logging` call at the start and end of every pipeline stage with timing
+  - Log segment count after transcription, score distribution after scoring (min/max/mean)
+  - Log clip timestamps and scores after clip selection
+  - Log file sizes of extracted clips after extraction
+  - Log subtitle entry count per clip after subtitle generation
+  - All log messages use Python's `logging` module at `INFO` level
+  - Web UI streams these log lines in real time via SSE
+  - CLI prints them to stdout (already partially done — extend coverage)
+
+- [ ] 21. Write Docker Compose deployment for headless Ubuntu server (`docker-compose.yml`)
+  - Single `docker-compose.yml` at project root with two services:
+    - `app`: the web UI + pipeline (Python, FFmpeg, faster-whisper)
+    - `ollama`: the Ollama LLM server (optional, can be disabled)
+  - `app` service:
+    - Base image: `python:3.11-slim` with FFmpeg installed via apt
+    - Mounts `./uploads` and `./output` as volumes so files persist across restarts
+    - Exposes port `6800`
+    - Sets `OLLAMA_HOST=http://ollama:11434` env var
+  - `ollama` service:
+    - Image: `ollama/ollama:latest`
+    - Mounts `./ollama_models` volume for model persistence
+    - Exposes port `11434` internally
+  - `Dockerfile` for the app service:
+    - Install system deps: `ffmpeg`, `libgomp1`, `fonts-liberation` (for Pillow text)
+    - Copy requirements and install Python deps
+    - Copy source code
+    - `CMD ["python3", "web_server.py"]`
+  - `.dockerignore` to exclude test footage, output, venv, `__pycache__`
+
+- [ ] 22. Update README.md with Docker deployment and Ollama setup guide
+  - Add "Server Deployment" section with step-by-step Docker Compose instructions:
+    - `git clone`, `docker compose up -d`, open `http://<server-ip>:6800`
+  - Add detailed Ollama setup section:
+    - Installing Ollama on Ubuntu (curl install script)
+    - Pulling models: `ollama pull llama3`, `ollama pull llama3.2:1b`
+    - Running as a systemd service so it starts on boot
+    - Connecting the pipeline to a remote Ollama instance via `--llm-endpoint`
+    - Model size guide: which model to use based on available RAM
+  - Add "Accessing from another machine" section explaining the network setup
+  - Add troubleshooting section: common errors and fixes
 
 ## Notes
 
-- Tasks 1–14 are complete and pushed to GitHub
-- Tasks 15–18 are the remaining work, prioritised by impact:
-  - Task 15 is the highest priority — subtitle burn is the last known bug
-  - Task 16 is quick cleanup that improves usability
-  - Task 17 makes the project usable by anyone cloning the repo
-  - Task 18 is the final sign-off
+- Tasks 1–18 are complete and pushed to GitHub
+- Tasks 19–22 are the new server/web deployment work, in priority order:
+  - Task 19 (web UI) is the core deliverable — must be done before Docker
+  - Task 20 (verbose logging) feeds directly into the web UI's live log stream
+  - Task 21 (Docker Compose) wraps everything for server deployment
+  - Task 22 (README update) makes it usable by anyone
+- The tkinter `gui.py` can be kept for local macOS use but is no longer the primary UI
 - The LLM scoring path is optional at runtime via `config.llm_enabled`
 - All pushes go to `kiro/main` (plain `git push` works)
