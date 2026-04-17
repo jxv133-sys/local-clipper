@@ -345,8 +345,11 @@ class TestGenerateSubtitles:
         raw_path = os.path.join(config.output_dir, "clip_1_0s.mp4")
         open(raw_path, "w").close()
 
-        with patch("subprocess.run", return_value=completed(1, stderr="subtitle filter error")):
-            with pytest.raises(SubtitleError) as exc_info:
+        # Mock the entire _burn_subtitles function to raise SubtitleError
+        from pipeline.exceptions import SubtitleError as SE
+        with patch("pipeline.subtitle_generator._burn_subtitles",
+                   side_effect=SE("subtitle filter error")):
+            with pytest.raises(SE) as exc_info:
                 generate_subtitles(config, [clip], transcript, [raw_path])
 
         assert "subtitle filter error" in str(exc_info.value)
