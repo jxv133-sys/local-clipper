@@ -174,13 +174,18 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
     Raises:
         SubtitleError: If FFmpeg exits with a non-zero return code.
     """
-    # Escape the SRT path for the subtitles filter (colons and backslashes need escaping)
-    escaped_srt = srt_path.replace("\\", "\\\\").replace(":", "\\:")
+    # Use absolute path and escape for FFmpeg subtitles filter.
+    # On macOS/Linux, forward slashes in paths need no escaping but
+    # colons and backslashes do. Use absolute path to avoid relative
+    # path issues with the filter.
+    abs_srt = os.path.abspath(srt_path)
+    # Escape backslashes first, then colons, then single quotes
+    escaped_srt = abs_srt.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
-        "-vf", f"subtitles={escaped_srt}",
+        "-vf", f"subtitles='{escaped_srt}'",
         "-c:a", "copy",
         output_path,
     ]
