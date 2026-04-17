@@ -277,7 +277,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: successful run → temp dir deleted, clip paths printed to stdout
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7_
 
-- [x] 13. Final checkpoint — Ensure all tests pass
+- [ ] 13. Final checkpoint — Ensure all tests pass
   - Run `pytest tests/` and confirm all unit and property-based tests pass.
   - Ensure all tests pass, ask the user if questions arise.
 
