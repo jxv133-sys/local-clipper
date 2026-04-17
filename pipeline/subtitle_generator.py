@@ -174,28 +174,38 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
     Raises:
         SubtitleError: If FFmpeg exits with a non-zero return code.
     """
-    # Use absolute path and escape for FFmpeg subtitles filter.
-    # On macOS/Linux, forward slashes in paths need no escaping but
-    # colons and backslashes do. Use absolute path to avoid relative
-    # path issues with the filter.
-    abs_srt = os.path.abspath(srt_path)
-    # Escape backslashes first, then colons, then single quotes
-    escaped_srt = abs_srt.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    import shutil
+    import tempfile
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-vf", f"subtitles='{escaped_srt}'",
-        "-c:a", "copy",
-        output_path,
-    ]
+    # FFmpeg's subtitles filter has strict escaping rules that vary by platform.
+    # The safest approach: copy the SRT to a temp file with a simple name
+    # (no spaces, colons, or special chars) and use that path.
+    with tempfile.NamedTemporaryFile(suffix=".srt", delete=False, dir=tempfile.gettempdir()) as tmp:
+        tmp_srt = tmp.name
 
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        shutil.copy2(srt_path, tmp_srt)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-vf", f"subtitles={tmp_srt}",
+            "-c:a", "copy",
+            output_path,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    finally:
+        try:
+            os.unlink(tmp_srt)
+        except OSError:
+            pass
+
     if result.returncode != 0:
         raise SubtitleError(
             f"FFmpeg failed (exit code {result.returncode}) while burning subtitles "
