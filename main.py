@@ -27,6 +27,7 @@ from pipeline.audio_extractor import extract_audio
 from pipeline.clip_extractor import extract_clips
 from pipeline.clip_selector import select_clips
 from pipeline.exceptions import PipelineError
+from pipeline.report_generator import generate_report
 from pipeline.scorer import score_segments
 from pipeline.subtitle_generator import generate_subtitles
 from pipeline.transcriber import transcribe
@@ -118,6 +119,14 @@ def run_pipeline(video_path: str, config: Config) -> list[str]:
     final_paths = _run_stage("SubtitleGenerator", generate_subtitles, config, clips,
                              transcript, clip_paths)
 
+    # Stage 7: Why-chosen reports
+    print("[ReportGenerator] Writing selection reports...", flush=True)
+    report_paths: list[str] = []
+    for clip, clip_path in zip(clips, final_paths):
+        report_path = generate_report(clip, scored_segments, transcript, clip_path)
+        report_paths.append(report_path)
+    print(f"[ReportGenerator] Done — {len(report_paths)} report(s) written", flush=True)
+
     return final_paths
 
 
@@ -178,7 +187,11 @@ def main() -> None:
 
     print("\n✓ Done! Exported clips:")
     for path in final_paths:
+        base = os.path.splitext(path)[0]
+        report = base + "_why_chosen.txt"
         print(f"  {path}")
+        if os.path.exists(report):
+            print(f"    └─ {report}")
 
 
 if __name__ == "__main__":

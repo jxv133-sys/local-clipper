@@ -250,6 +250,7 @@ class TestSuccessfulRun:
              patch("main.select_clips", return_value=clips), \
              patch("main.extract_clips", return_value=final_paths), \
              patch("main.generate_subtitles", return_value=final_paths), \
+             patch("main.generate_report", return_value=str(tmp_path / "output" / "clip_1_0s_why_chosen.txt")), \
              patch("main._get_video_duration", return_value=300.0), \
              patch("tempfile.mkdtemp", return_value=str(tmp_path)), \
              patch("main.build_config", return_value=config), \
@@ -277,6 +278,7 @@ class TestSuccessfulRun:
              patch("main.select_clips", return_value=clips), \
              patch("main.extract_clips", return_value=final_paths), \
              patch("main.generate_subtitles", return_value=final_paths), \
+             patch("main.generate_report", return_value="/output/clip_1_0s_why_chosen.txt"), \
              patch("main._get_video_duration", return_value=300.0), \
              patch("tempfile.mkdtemp", return_value=str(tmp_path)), \
              patch("main.build_config", return_value=config), \
