@@ -256,10 +256,10 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: FFmpeg non-zero exit during subtitle burn → `SubtitleError` with stderr in message
     - _Requirements: 9.2, 9.4, 9.5, 9.7_
 
-- [-] 11. Checkpoint — Ensure all clip selector, extractor, and subtitle tests pass
+- [x] 11. Checkpoint — Ensure all clip selector, extractor, and subtitle tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [~] 12. Implement Pipeline Orchestrator (`main.py`)
+- [x] 12. Implement Pipeline Orchestrator (`main.py`)
   - Parse CLI arguments; if `<input_video_path>` is missing, print usage to stderr and exit with code 1
   - Load `Config` with defaults; allow overrides via CLI flags or environment variables as appropriate
   - Create a temporary working directory and set `config.work_dir`
@@ -277,7 +277,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
     - Test: successful run → temp dir deleted, clip paths printed to stdout
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7_
 
-- [~] 13. Final checkpoint — Ensure all tests pass
+- [x] 13. Final checkpoint — Ensure all tests pass
   - Run `pytest tests/` and confirm all unit and property-based tests pass.
   - Ensure all tests pass, ask the user if questions arise.
 
