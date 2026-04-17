@@ -63,7 +63,7 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
   - Description of output files (clips, SRT, why-chosen reports)
   - Known limitations (CPU-only Whisper speed, subtitle font requires libass)
 
-- [-] 18. Final end-to-end test on real footage
+- [x] 18. Final end-to-end test on real footage
   - Run full pipeline via GUI on `WATERPARK-SIMULATOR-DAY-4.mp4`
   - Confirm 3 clips exported to `~/Desktop/test-footage/highlights/`
   - Confirm subtitles are burned in and readable
