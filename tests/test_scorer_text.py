@@ -262,6 +262,39 @@ class TestComputeTextScore:
             score = compute_text_score(config, make_segment(text))
             assert 0.0 <= score <= 1.0, f"Score {score} out of range for text: {text!r}"
 
+    def test_typical_segments_mean_score_above_threshold(self) -> None:
+        """Mean text score across typical varied segments should be > 0.2.
+
+        This guards against normalization that clusters scores near 0 on
+        real-world input (e.g. the old sigmoid with a large divisor).
+        """
+        config = make_config(keywords=["crazy", "important", "watch this"])
+        segments = [
+            make_segment("That was absolutely crazy, I can't believe it happened!"),
+            make_segment("Watch this incredible move right here."),
+            make_segment(
+                "So the important thing to understand is that the algorithm "
+                "processes each frame independently before combining results."
+            ),
+            make_segment("Oh wow, did you see that? No way!"),
+            make_segment(
+                "In this section we cover the background context and motivation "
+                "for the approach we are about to demonstrate."
+            ),
+            make_segment("Let's go! That was insane!"),
+            make_segment(
+                "The configuration file controls all the major parameters "
+                "including the model size and output directory."
+            ),
+            make_segment("Are you kidding me? That's unbelievable!"),
+        ]
+        scores = [compute_text_score(config, seg) for seg in segments]
+        mean_score = sum(scores) / len(scores)
+        assert mean_score > 0.2, (
+            f"Mean text score {mean_score:.4f} is <= 0.2; "
+            f"normalization is too aggressive. Individual scores: {scores}"
+        )
+
     def test_keyword_case_insensitive(self) -> None:
         """Keywords are matched case-insensitively."""
         config = make_config(keywords=["crazy"])
@@ -277,6 +310,65 @@ class TestComputeTextScore:
         one = make_segment("wow that was great")
         two = make_segment("wow wow that was great")
         assert compute_text_score(config, two) > compute_text_score(config, one)
+
+    # --- Speech density (pace) tests ---
+
+    def test_fast_speech_scores_higher_than_slow_speech(self) -> None:
+        """Fast speech (> 3 wps) scores higher than slow speech with the same text."""
+        config = DEFAULT_CONFIG
+        text = "one two three four five six seven eight nine ten"
+        # 10 words in 2 seconds → 5 wps (fast)
+        fast_seg = make_segment(text, start=0.0, end=2.0)
+        # 10 words in 10 seconds → 1 wps (slow)
+        slow_seg = make_segment(text, start=0.0, end=10.0)
+        assert compute_text_score(config, fast_seg) > compute_text_score(config, slow_seg)
+
+    def test_zero_duration_segment_does_not_crash(self) -> None:
+        """A segment with zero duration should not raise and should return a valid score."""
+        config = DEFAULT_CONFIG
+        seg = make_segment("hello world", start=5.0, end=5.0)
+        score = compute_text_score(config, seg)
+        assert 0.0 <= score <= 1.0
+
+    def test_negative_duration_segment_does_not_crash(self) -> None:
+        """A segment with negative duration should not raise and should return a valid score."""
+        config = DEFAULT_CONFIG
+        seg = make_segment("hello world", start=5.0, end=3.0)
+        score = compute_text_score(config, seg)
+        assert 0.0 <= score <= 1.0
+
+    def test_pace_component_does_not_break_normalization(self) -> None:
+        """Pace bonus must not push the score outside [0.0, 1.0]."""
+        config = DEFAULT_CONFIG
+        # Extremely fast speech: 100 words in 0.1 seconds → 1000 wps
+        text = " ".join(["word"] * 100)
+        seg = make_segment(text, start=0.0, end=0.1)
+        score = compute_text_score(config, seg)
+        assert 0.0 <= score <= 1.0
+
+    def test_pace_at_threshold_gives_no_bonus(self) -> None:
+        """Speech exactly at 3 wps should give no pace bonus (bonus is 0 at threshold)."""
+        config = DEFAULT_CONFIG
+        # 3 words in 1 second → exactly 3 wps
+        at_threshold = make_segment("one two three", start=0.0, end=1.0)
+        # 3 words in 2 seconds → 1.5 wps (below threshold)
+        below_threshold = make_segment("one two three", start=0.0, end=2.0)
+        # Both should have the same score since neither exceeds 3 wps
+        assert compute_text_score(config, at_threshold) == compute_text_score(
+            config, below_threshold
+        )
+
+    def test_pace_bonus_increases_with_speed(self) -> None:
+        """Higher words-per-second (above threshold) should yield a higher score."""
+        config = DEFAULT_CONFIG
+        text = "one two three four five six seven eight"  # 8 words
+        # 8 words in 2 seconds → 4 wps (just above threshold)
+        moderate_fast = make_segment(text, start=0.0, end=2.0)
+        # 8 words in 1 second → 8 wps (much faster)
+        very_fast = make_segment(text, start=0.0, end=1.0)
+        assert compute_text_score(config, very_fast) > compute_text_score(
+            config, moderate_fast
+        )
 
 
 class TestCombineScores:

@@ -349,3 +349,138 @@ class TestTranscribeJsonRoundTrip:
 
         assert restored == original
         assert restored.segments == []
+
+
+# ---------------------------------------------------------------------------
+# Helpers for WAV-duration-aware tests
+# ---------------------------------------------------------------------------
+
+import struct
+import wave as _wave_module
+
+
+def _write_real_wav(path, duration_seconds: float, sample_rate: int = 16000) -> None:
+    """Write a minimal valid WAV file of the given duration (silence)."""
+    num_frames = int(duration_seconds * sample_rate)
+    with _wave_module.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        # Write silence (all zeros)
+        wf.writeframes(b"\x00\x00" * num_frames)
+
+
+# ---------------------------------------------------------------------------
+# VAD logging tests
+# ---------------------------------------------------------------------------
+
+class TestVadRemovedLogging:
+    """Verify that VAD-removed time is logged when gaps exist between segments."""
+
+    def test_vad_log_emitted_when_gaps_between_segments(self, tmp_path, caplog):
+        """transcribe() logs VAD-removed message when segments have gaps > 0.5s."""
+        import logging
+
+        wav = tmp_path / "audio.wav"
+        # 60-second audio file
+        _write_real_wav(wav, duration_seconds=60.0)
+
+        config = _make_config(tmp_path)
+
+        # Segments cover 0-5s and 35-40s, leaving a ~30s gap in the middle
+        # and a ~20s tail — both > 0.5s threshold
+        whisper_segments = [
+            {"start": 0.0, "end": 5.0, "text": "Hello"},
+            {"start": 35.0, "end": 40.0, "text": "World"},
+        ]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            with caplog.at_level(logging.INFO, logger="pipeline.transcriber"):
+                transcribe(config, str(wav))
+
+        vad_messages = [r.message for r in caplog.records if "VAD removed" in r.message]
+        assert len(vad_messages) == 1, f"Expected 1 VAD log message, got: {vad_messages}"
+
+        msg = vad_messages[0]
+        # Should mention "silent sections" (plural, since there are 2 gaps)
+        assert "silent section" in msg
+        assert "[Transcriber] VAD removed" in msg
+
+    def test_vad_log_not_emitted_when_no_gaps(self, tmp_path, caplog):
+        """transcribe() does NOT log VAD message when segments cover the full audio."""
+        import logging
+
+        wav = tmp_path / "audio.wav"
+        _write_real_wav(wav, duration_seconds=10.0)
+
+        config = _make_config(tmp_path)
+
+        # Segments cover the full 10 seconds with no gaps
+        whisper_segments = [
+            {"start": 0.0, "end": 5.0, "text": "First half"},
+            {"start": 5.0, "end": 10.0, "text": "Second half"},
+        ]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            with caplog.at_level(logging.INFO, logger="pipeline.transcriber"):
+                transcribe(config, str(wav))
+
+        vad_messages = [r.message for r in caplog.records if "VAD removed" in r.message]
+        assert len(vad_messages) == 0, f"Expected no VAD log message, got: {vad_messages}"
+
+    def test_vad_log_format_minutes_and_seconds(self, tmp_path, caplog):
+        """VAD log message uses MM:SS format (e.g. '32:24')."""
+        import logging
+
+        # 2000-second audio; segments cover only 10s, leaving ~1990s removed
+        wav = tmp_path / "audio.wav"
+        _write_real_wav(wav, duration_seconds=2000.0)
+
+        config = _make_config(tmp_path)
+
+        whisper_segments = [
+            {"start": 0.0, "end": 5.0, "text": "Start"},
+            {"start": 5.0, "end": 10.0, "text": "End"},
+        ]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            with caplog.at_level(logging.INFO, logger="pipeline.transcriber"):
+                transcribe(config, str(wav))
+
+        vad_messages = [r.message for r in caplog.records if "VAD removed" in r.message]
+        assert len(vad_messages) == 1
+        msg = vad_messages[0]
+        # 1990 seconds = 33 minutes 10 seconds → "33:10"
+        assert "33:10" in msg
+
+    def test_vad_log_singular_section(self, tmp_path, caplog):
+        """VAD log uses singular 'section' when only one gap exists."""
+        import logging
+
+        wav = tmp_path / "audio.wav"
+        _write_real_wav(wav, duration_seconds=20.0)
+
+        config = _make_config(tmp_path)
+
+        # One gap: segment ends at 5s, audio ends at 20s → 15s tail gap
+        whisper_segments = [
+            {"start": 0.0, "end": 5.0, "text": "Only speech"},
+        ]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            with caplog.at_level(logging.INFO, logger="pipeline.transcriber"):
+                transcribe(config, str(wav))
+
+        vad_messages = [r.message for r in caplog.records if "VAD removed" in r.message]
+        assert len(vad_messages) == 1
+        msg = vad_messages[0]
+        assert "1 silent section" in msg
+        assert "sections" not in msg

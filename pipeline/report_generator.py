@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
-from pipeline.models import Clip, ScoredSegment, Transcript
+from pipeline.models import Clip, LLMMetadata, ScoredSegment, Transcript
+
+logger = logging.getLogger(__name__)
 
 
 def _format_time(seconds: float) -> str:
@@ -32,6 +35,7 @@ def generate_report(
     - Clip timing and duration
     - Overall clip score and rank
     - Score breakdown (text, audio, LLM)
+    - YouTube Shorts metadata (title, description, tags) if LLM was enabled
     - The transcript text covered by the clip
     - Which scoring signals fired (keywords, punctuation, energy)
 
@@ -83,6 +87,21 @@ def generate_report(
         if seed_scored.llm_score > 0.0:
             lines.append(f"  LLM Rating:     {_score_bar(seed_scored.llm_score)}")
         lines.append("")
+
+        # YouTube Shorts metadata (only present when LLM was enabled)
+        meta: LLMMetadata | None = seed_scored.llm_metadata
+        if meta and meta.title:
+            lines.append("YOUTUBE SHORTS METADATA")
+            lines.append("-" * 60)
+            lines.append(f"  Title:       {meta.title}")
+            lines.append("")
+            if meta.description:
+                lines.append("  Description:")
+                lines.append(f"  {meta.description}")
+                lines.append("")
+            if meta.tags:
+                lines.append(f"  Tags:        {' '.join(meta.tags)}")
+            lines.append("")
 
         # Explain what drove the score
         reasons: list[str] = []
@@ -164,4 +183,5 @@ def generate_report(
     with open(report_path, "w", encoding="utf-8") as fh:
         fh.write(report_content)
 
+    logger.info("ReportGenerator: wrote report for clip #%d → %s", clip.rank, report_path)
     return report_path

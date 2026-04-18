@@ -134,7 +134,7 @@ class TestRunPipelineStageOrdering:
             "extract_clips",
             "generate_subtitles",
         ]
-        assert result == final_paths
+        assert result == (final_paths, clips)
 
     def test_wav_path_passed_to_transcribe(self, tmp_path):
         """The WAV path returned by extract_audio is passed to transcribe."""
@@ -262,12 +262,12 @@ class TestSuccessfulRun:
         mock_rmtree.assert_called_once_with(str(tmp_path), ignore_errors=True)
 
     def test_clip_paths_printed_on_success(self, tmp_path, capsys):
-        """Final clip paths are printed to stdout on success."""
+        """Final clip filenames are printed to stdout on success."""
         import main as m
 
         transcript = _make_transcript(2)
         scored = _make_scored_segments(transcript)
-        clips = _make_clips(1)
+        clips = _make_clips(2)
         final_paths = ["/output/clip_1_0s.mp4", "/output/clip_2_30s.mp4"]
 
         config = Config(work_dir=str(tmp_path), output_dir=str(tmp_path / "output"))
@@ -288,5 +288,37 @@ class TestSuccessfulRun:
             m.main()
 
         captured = capsys.readouterr()
-        assert "/output/clip_1_0s.mp4" in captured.out
-        assert "/output/clip_2_30s.mp4" in captured.out
+        assert "clip_1_0s.mp4" in captured.out
+        assert "clip_2_30s.mp4" in captured.out
+
+    def test_summary_includes_duration_and_score(self, tmp_path, capsys):
+        """CLI summary shows duration in seconds and score for each clip."""
+        import main as m
+
+        transcript = _make_transcript(2)
+        scored = _make_scored_segments(transcript)
+        # clip: start=0.0, end=25.0, score=0.9 → "25s  score=0.90"
+        clips = _make_clips(1)
+        final_paths = ["/output/clip_1_0s.mp4"]
+
+        config = Config(work_dir=str(tmp_path), output_dir=str(tmp_path / "output"))
+
+        with patch("main.extract_audio", return_value=str(tmp_path / "audio.wav")), \
+             patch("main.transcribe", return_value=transcript), \
+             patch("main.score_segments", return_value=scored), \
+             patch("main.select_clips", return_value=clips), \
+             patch("main.extract_clips", return_value=final_paths), \
+             patch("main.generate_subtitles", return_value=final_paths), \
+             patch("main.generate_report", return_value="/output/clip_1_0s_why_chosen.txt"), \
+             patch("main._get_video_duration", return_value=300.0), \
+             patch("tempfile.mkdtemp", return_value=str(tmp_path)), \
+             patch("main.build_config", return_value=config), \
+             patch("shutil.rmtree"), \
+             patch("sys.argv", ["main.py", "/fake/video.mp4"]):
+
+            m.main()
+
+        captured = capsys.readouterr()
+        # clip_1_0s.mp4  25s  score=0.90
+        assert "25s" in captured.out
+        assert "score=0.90" in captured.out

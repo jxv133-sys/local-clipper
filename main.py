@@ -16,6 +16,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shutil
 import ssl
@@ -90,6 +91,7 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     cfg.llm_model = args.llm_model
     if args.keywords:
         cfg.keywords = args.keywords
+    cfg.burn_subtitles = not args.no_subtitles
 
     # When LLM is enabled, give it real weight and reduce text/audio proportionally
     if cfg.llm_enabled:
@@ -149,7 +151,7 @@ def run_pipeline(video_path: str, config: Config) -> list[str]:
         report_paths.append(report_path)
     print(f"[ReportGenerator] Done — {len(report_paths)} report(s) written", flush=True)
 
-    return final_paths
+    return final_paths, clips
 
 
 def main() -> None:
@@ -174,8 +176,17 @@ def main() -> None:
                         help="LLM model name (default: llama3)")
     parser.add_argument("--keywords", nargs="+",
                         help="Keywords that boost segment scores")
+    parser.add_argument("--no-subtitles", action="store_true",
+                        help="Skip burning subtitles into clips (SRT files are still written)")
 
     args = parser.parse_args()
+
+    # Configure logging so pipeline INFO messages appear on stdout
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        stream=sys.stdout,
+    )
 
     work_dir = tempfile.mkdtemp(prefix="highlight_")
 
@@ -191,11 +202,12 @@ def main() -> None:
     print(f"Whisper:    {config.whisper_model}")
     print(f"Top N:      {config.top_n_clips}")
     print(f"LLM:        {'enabled (' + config.llm_model + ')' if config.llm_enabled else 'disabled'}")
+    print(f"Subtitles:  {'enabled' if config.burn_subtitles else 'disabled (SRT only)'}")
     print(f"Weights:    text={config.text_weight:.2f}  audio={config.audio_weight:.2f}  llm={config.llm_weight:.2f}")
     print()
 
     try:
-        final_paths = run_pipeline(args.input_video, config)
+        final_paths, clips = run_pipeline(args.input_video, config)
     except PipelineError as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         print(f"Temporary files kept for debugging: {work_dir}", file=sys.stderr)
@@ -209,10 +221,13 @@ def main() -> None:
     shutil.rmtree(work_dir, ignore_errors=True)
 
     print("\n✓ Done! Exported clips:")
-    for path in final_paths:
+    for path, clip in zip(final_paths, clips):
+        filename = os.path.basename(path)
+        duration_s = int(round(clip.end - clip.start))
+        score_str = f"{clip.score:.2f}"
+        print(f"  {filename}  {duration_s}s  score={score_str}")
         base = os.path.splitext(path)[0]
         report = base + "_why_chosen.txt"
-        print(f"  {path}")
         if os.path.exists(report):
             print(f"    └─ {report}")
 

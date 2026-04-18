@@ -1,11 +1,15 @@
 """Audio extraction stage: extracts a mono 16kHz WAV from a video file using FFmpeg."""
 
+import logging
 import os
 import shutil
 import subprocess
+import time
 
 from config import Config
 from pipeline.exceptions import AudioExtractionError
+
+logger = logging.getLogger(__name__)
 
 # Phrases in FFmpeg stderr that indicate no audio track was found
 _NO_AUDIO_INDICATORS = [
@@ -32,6 +36,9 @@ def extract_audio(config: Config, video_path: str) -> str:
         AudioExtractionError: If FFmpeg is not found on PATH, if the video
             contains no audio track, or if FFmpeg exits with a non-zero code.
     """
+    logger.info("AudioExtractor starting — input: %s", video_path)
+    t0 = time.time()
+
     # 1. Verify the input file exists.
     if not os.path.exists(video_path):
         raise FileNotFoundError(
@@ -83,4 +90,6 @@ def extract_audio(config: Config, video_path: str) -> str:
         )
 
     # 6. Return the path to the extracted WAV file.
+    elapsed = time.time() - t0
+    logger.info("AudioExtractor complete — output: %s (%.1fs)", output_wav, elapsed)
     return output_wav

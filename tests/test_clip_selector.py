@@ -372,3 +372,263 @@ class TestOverlapMerging:
             assert sorted_clips[i].end <= sorted_clips[i + 1].start, (
                 f"Overlap detected between clip {i} and {i+1}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Task 24: min_text_score_for_selection threshold tests
+# ---------------------------------------------------------------------------
+
+class TestMinTextScoreThreshold:
+    """Segments below min_text_score_for_selection are excluded when enough
+    above-threshold candidates exist, but included as fallback otherwise."""
+
+    def _make_scored_with_text_score(
+        self, segment: Segment, clip_score: float, text_score: float
+    ) -> ScoredSegment:
+        return ScoredSegment(
+            segment=segment,
+            text_score=text_score,
+            audio_score=clip_score,
+            llm_score=0.0,
+            clip_score=clip_score,
+        )
+
+    def test_below_threshold_excluded_when_enough_above_threshold(self):
+        """Segments with text_score < threshold are excluded when >= top_n_clips
+        segments are above the threshold."""
+        # 5 segments well above threshold (text_score=0.5), 2 below (text_score=0.01)
+        # top_n_clips=3, threshold=0.05 → 5 above-threshold candidates >= 3, so
+        # the 2 below-threshold segments should NOT appear in the result.
+        above_segs = [make_segment(i * 30.0, i * 30.0 + 5.0, f"above{i}") for i in range(5)]
+        below_segs = [make_segment(200.0 + i * 30.0, 200.0 + i * 30.0 + 5.0, f"below{i}") for i in range(2)]
+
+        all_segs = above_segs + below_segs
+        scored = (
+            [self._make_scored_with_text_score(seg, 0.5, 0.5) for seg in above_segs]
+            + [self._make_scored_with_text_score(seg, 0.9, 0.01) for seg in below_segs]
+        )
+        # Note: below_segs have higher clip_score (0.9) but text_score below threshold.
+        # They should still be excluded because there are enough above-threshold candidates.
+
+        transcript = make_transcript(all_segs)
+        config = make_config(top_n_clips=3, min_text_score_for_selection=0.05)
+
+        clips = select_clips(config, scored, transcript, video_duration=500.0)
+
+        # All returned clips must come from above-threshold segments
+        above_starts = {seg.start for seg in above_segs}
+        for clip in clips:
+            # The clip's time range should overlap with an above-threshold segment
+            # (clip is expanded, so we check that the seed segment was above-threshold)
+            # We verify by checking that no clip is centred on a below-threshold segment
+            for below_seg in below_segs:
+                # A clip seeded from a below-threshold segment would have its start
+                # near that segment's start (before expansion). If the clip's range
+                # contains the below segment's midpoint but no above segment, it was
+                # seeded from below.
+                pass  # structural check below is sufficient
+
+        # The simplest check: with 5 above-threshold candidates and top_n=3,
+        # we should get at most 3 clips, none seeded from the below-threshold segments.
+        # Since below_segs have higher clip_score (0.9 > 0.5), if filtering is NOT
+        # applied they would be selected first. So if filtering works, the clips
+        # should have score=0.5 (from above-threshold segments).
+        assert len(clips) <= 3
+        for clip in clips:
+            assert clip.score == 0.5, (
+                f"Expected score 0.5 (above-threshold), got {clip.score}. "
+                "Below-threshold segment may have been incorrectly selected."
+            )
+
+    def test_below_threshold_included_as_fallback_when_not_enough_above(self):
+        """Segments with text_score < threshold are included as fallback when
+        fewer than top_n_clips segments are above the threshold."""
+        # Only 2 segments above threshold, but top_n_clips=5 → fallback to all segments
+        above_segs = [make_segment(i * 30.0, i * 30.0 + 5.0, f"above{i}") for i in range(2)]
+        below_segs = [make_segment(100.0 + i * 30.0, 100.0 + i * 30.0 + 5.0, f"below{i}") for i in range(4)]
+
+        all_segs = above_segs + below_segs
+        scored = (
+            [self._make_scored_with_text_score(seg, 0.5, 0.5) for seg in above_segs]
+            + [self._make_scored_with_text_score(seg, 0.8, 0.01) for seg in below_segs]
+        )
+
+        transcript = make_transcript(all_segs)
+        config = make_config(top_n_clips=5, min_text_score_for_selection=0.05)
+
+        clips = select_clips(config, scored, transcript, video_duration=500.0)
+
+        # With fallback, below-threshold segments (score=0.8) should be included.
+        # We expect clips with score=0.8 to appear since they rank higher.
+        scores = {clip.score for clip in clips}
+        assert 0.8 in scores, (
+            f"Expected below-threshold segments (score=0.8) to be included as fallback, "
+            f"but got scores: {scores}"
+        )
+
+    def test_threshold_zero_includes_all_segments(self):
+        """With threshold=0.0, no segments are filtered out."""
+        segs = [make_segment(i * 30.0, i * 30.0 + 5.0) for i in range(5)]
+        scored = [
+            self._make_scored_with_text_score(seg, float(i) / 10.0, 0.0)
+            for i, seg in enumerate(segs)
+        ]
+        transcript = make_transcript(segs)
+        config = make_config(top_n_clips=3, min_text_score_for_selection=0.0)
+
+        clips = select_clips(config, scored, transcript, video_duration=300.0)
+
+        # All segments have text_score=0.0 which equals threshold=0.0 (>= passes)
+        # Top 3 by clip_score should be selected
+        assert len(clips) <= 3
+        top3_scores = {0.4, 0.3, 0.2}
+        for clip in clips:
+            assert clip.score in top3_scores, f"Unexpected score {clip.score}"
+
+    def test_all_segments_below_threshold_uses_fallback(self):
+        """When ALL segments are below the threshold, all are used as fallback."""
+        segs = [make_segment(i * 30.0, i * 30.0 + 5.0) for i in range(4)]
+        scored = [
+            self._make_scored_with_text_score(seg, float(i + 1) / 10.0, 0.01)
+            for i, seg in enumerate(segs)
+        ]
+        transcript = make_transcript(segs)
+        config = make_config(top_n_clips=3, min_text_score_for_selection=0.05)
+
+        clips = select_clips(config, scored, transcript, video_duration=300.0)
+
+        # Fallback: all 4 segments are candidates, top 3 by clip_score selected
+        assert len(clips) <= 3
+        # Highest clip_scores are 0.4, 0.3, 0.2
+        for clip in clips:
+            assert clip.score in {0.4, 0.3, 0.2}, f"Unexpected score {clip.score}"
+
+
+# ---------------------------------------------------------------------------
+# Task 28: max_expansion_gap — silence gap boundary tests
+# ---------------------------------------------------------------------------
+
+class TestMaxExpansionGap:
+    """Expansion stops at silence gaps > max_expansion_gap."""
+
+    def test_expansion_stops_at_large_gap_left(self):
+        """Left expansion stops when the gap between the left neighbour and the
+        current clip start exceeds max_expansion_gap."""
+        # Transcript: seg0 ends at 5s, then a 3s gap, seg1 starts at 8s (seed)
+        # max_expansion_gap=2.0 → gap of 3s should block left expansion
+        seg0 = make_segment(0.0, 5.0)   # left neighbour — gap of 3s to seed
+        seg1 = make_segment(8.0, 10.0)  # seed segment
+        # Add more segments to the right so the clip can still reach 20s
+        right_segs = [make_segment(10.0 + i * 2.0, 12.0 + i * 2.0) for i in range(10)]
+
+        all_segs = [seg0, seg1] + right_segs
+        scored = [make_scored(seg1, 0.9)]
+        transcript = make_transcript(all_segs)
+        config = make_config(top_n_clips=1, max_expansion_gap=2.0)
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        # seg0 ends at 5.0; gap to clip_start (8.0) is 3.0 > 2.0 → seg0 must NOT be included
+        assert clips[0].start >= 8.0, (
+            f"Expected clip.start >= 8.0 (gap blocked left expansion), got {clips[0].start}"
+        )
+
+    def test_expansion_stops_at_large_gap_right(self):
+        """Right expansion stops when the gap between the current clip end and
+        the right neighbour exceeds max_expansion_gap."""
+        # Transcript: seg0 (seed) ends at 5s, then a 3s gap, seg1 starts at 8s
+        # max_expansion_gap=2.0 → gap of 3s should block right expansion
+        left_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(5)]  # 0-10s
+        seed_seg = make_segment(10.0, 12.0)  # seed
+        far_seg = make_segment(15.0, 17.0)   # gap of 3s from seed end (12.0) → 15.0
+
+        all_segs = left_segs + [seed_seg, far_seg]
+        scored = [make_scored(seed_seg, 0.9)]
+        transcript = make_transcript(all_segs)
+        config = make_config(top_n_clips=1, max_expansion_gap=2.0)
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        # far_seg starts at 15.0; gap from clip_end (12.0) is 3.0 > 2.0 → far_seg must NOT be included
+        assert clips[0].end <= 12.0, (
+            f"Expected clip.end <= 12.0 (gap blocked right expansion), got {clips[0].end}"
+        )
+
+    def test_expansion_continues_across_small_gap(self):
+        """Expansion continues when the gap between segments is <= max_expansion_gap."""
+        # Transcript: seg0 ends at 5s, 1s gap, seg1 starts at 6s (seed)
+        # max_expansion_gap=2.0 → gap of 1s should allow left expansion
+        seg0 = make_segment(0.0, 5.0)   # left neighbour — gap of 1s to seed
+        seg1 = make_segment(6.0, 8.0)   # seed segment
+        right_segs = [make_segment(8.0 + i * 2.0, 10.0 + i * 2.0) for i in range(10)]
+
+        all_segs = [seg0, seg1] + right_segs
+        scored = [make_scored(seg1, 0.9)]
+        transcript = make_transcript(all_segs)
+        config = make_config(top_n_clips=1, max_expansion_gap=2.0)
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        # seg0 ends at 5.0; gap to clip_start (6.0) is 1.0 <= 2.0 → seg0 SHOULD be included
+        assert clips[0].start <= 5.0, (
+            f"Expected clip.start <= 5.0 (small gap allows left expansion), got {clips[0].start}"
+        )
+
+    def test_expansion_continues_across_zero_gap(self):
+        """Expansion continues when segments are contiguous (gap = 0)."""
+        # Contiguous segments: each ends exactly where the next begins
+        segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(15)]
+        seed_seg = segs[7]  # middle segment
+        scored = [make_scored(seed_seg, 0.9)]
+        transcript = make_transcript(segs)
+        config = make_config(top_n_clips=1, max_expansion_gap=2.0)
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        # Should expand to at least 20s since all gaps are 0
+        assert (clips[0].end - clips[0].start) >= 20.0, (
+            f"Expected duration >= 20s with contiguous segments, got {clips[0].end - clips[0].start}"
+        )
+
+    def test_large_gap_both_sides_clips_shorter_than_min(self):
+        """When large gaps block both directions, clip may be shorter than min_clip_duration."""
+        # Isolated segment surrounded by large gaps
+        far_left = make_segment(0.0, 2.0)    # gap of 10s to seed
+        seed_seg = make_segment(12.0, 14.0)  # seed
+        far_right = make_segment(24.0, 26.0) # gap of 10s from seed end
+
+        all_segs = [far_left, seed_seg, far_right]
+        scored = [make_scored(seed_seg, 0.9)]
+        transcript = make_transcript(all_segs)
+        config = make_config(top_n_clips=1, max_expansion_gap=2.0)
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        # Both neighbours are blocked by large gaps; clip stays at seed boundaries (clamped)
+        assert clips[0].start >= 12.0, f"Expected start >= 12.0, got {clips[0].start}"
+        assert clips[0].end <= 14.0, f"Expected end <= 14.0, got {clips[0].end}"
+
+    def test_exact_gap_equal_to_max_expansion_gap_allows_expansion(self):
+        """A gap exactly equal to max_expansion_gap should allow expansion (boundary is exclusive)."""
+        # Gap exactly 2.0s — should be allowed (gap <= max_expansion_gap)
+        seg0 = make_segment(0.0, 4.0)    # left neighbour — gap of exactly 2.0s to seed
+        seed_seg = make_segment(6.0, 8.0)
+        right_segs = [make_segment(8.0 + i * 2.0, 10.0 + i * 2.0) for i in range(10)]
+
+        all_segs = [seg0, seed_seg] + right_segs
+        scored = [make_scored(seed_seg, 0.9)]
+        transcript = make_transcript(all_segs)
+        config = make_config(top_n_clips=1, max_expansion_gap=2.0)
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        # gap = 6.0 - 4.0 = 2.0, which is NOT > 2.0, so expansion should proceed
+        assert clips[0].start <= 4.0, (
+            f"Expected clip.start <= 4.0 (gap == max_expansion_gap allows expansion), got {clips[0].start}"
+        )

@@ -5,7 +5,10 @@ over openai-whisper on CPU. Falls back to openai-whisper if not installed.
 """
 
 import json
+import logging
 import os
+import time
+import wave
 
 # Try faster-whisper first (significantly faster on CPU)
 try:
@@ -23,6 +26,70 @@ except ImportError:
 from config import Config
 from pipeline.exceptions import TranscriptionError
 from pipeline.models import Segment, Transcript
+
+logger = logging.getLogger(__name__)
+
+
+_VAD_GAP_THRESHOLD = 0.5  # seconds — gaps larger than this count as a silent section
+
+
+def _get_wav_duration(wav_path: str) -> float:
+    """Return the duration of a WAV file in seconds."""
+    with wave.open(wav_path, "rb") as wf:
+        frames = wf.getnframes()
+        rate = wf.getframerate()
+        return frames / float(rate)
+
+
+def _log_vad_removed(segments: list[Segment], audio_duration: float) -> None:
+    """Log how much audio VAD removed, if any.
+
+    Computes gaps between consecutive segments (and before the first /
+    after the last) and logs the total removed time and silent section count
+    at INFO level when there is at least one silent section.
+
+    Args:
+        segments: Transcribed segments (sorted by start time).
+        audio_duration: Total duration of the source WAV file in seconds.
+    """
+    if not segments:
+        # No segments at all — the entire file was silent; nothing useful to log
+        # (the "no speech detected" message already covers this case).
+        return
+
+    silent_sections = 0
+    total_removed = 0.0
+
+    # Gap before the first segment
+    gap_before = segments[0].start
+    if gap_before > _VAD_GAP_THRESHOLD:
+        silent_sections += 1
+        total_removed += gap_before
+
+    # Gaps between consecutive segments
+    for i in range(len(segments) - 1):
+        gap = segments[i + 1].start - segments[i].end
+        if gap > _VAD_GAP_THRESHOLD:
+            silent_sections += 1
+            total_removed += gap
+
+    # Gap after the last segment
+    gap_after = audio_duration - segments[-1].end
+    if gap_after > _VAD_GAP_THRESHOLD:
+        silent_sections += 1
+        total_removed += gap_after
+
+    if silent_sections > 0:
+        total_seconds = int(round(total_removed))
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        logger.info(
+            "[Transcriber] VAD removed %d:%02d of audio across %d silent section%s",
+            minutes,
+            seconds,
+            silent_sections,
+            "s" if silent_sections != 1 else "",
+        )
 
 
 def transcribe(config: Config, wav_path: str) -> Transcript:
@@ -50,6 +117,9 @@ def transcribe(config: Config, wav_path: str) -> Transcript:
     if not os.path.exists(wav_path):
         raise FileNotFoundError(f"WAV file not found: '{wav_path}'")
 
+    logger.info("Transcriber starting — wav: %s, model: %s", wav_path, config.whisper_model)
+    t0 = time.time()
+
     if _FASTER_WHISPER_AVAILABLE:
         segments = _transcribe_faster_whisper(config, wav_path)
     else:
@@ -57,10 +127,30 @@ def transcribe(config: Config, wav_path: str) -> Transcript:
 
     transcript = Transcript(segments=segments)
 
+    # Log VAD-removed time ranges (only when faster-whisper VAD filter is active)
+    try:
+        audio_duration = _get_wav_duration(wav_path)
+        _log_vad_removed(segments, audio_duration)
+    except Exception:
+        # Non-fatal — don't let duration reading break transcription
+        pass
+
     # Serialize to JSON in the working directory
     transcript_path = os.path.join(config.work_dir, "transcript.json")
     with open(transcript_path, "w", encoding="utf-8") as fh:
         json.dump(transcript.to_dict(), fh, ensure_ascii=False, indent=2)
+
+    elapsed = time.time() - t0
+    if segments:
+        logger.info(
+            "Transcriber complete — %d segment(s) in %.1fs",
+            len(segments),
+            elapsed,
+        )
+    else:
+        logger.info(
+            "Transcriber complete — no speech detected (%.1fs)", elapsed
+        )
 
     return transcript
 

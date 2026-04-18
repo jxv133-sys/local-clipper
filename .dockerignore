@@ -1,0 +1,47 @@
+# Test footage and large media files
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.m4v
+*.wav
+
+# Output and uploads (mounted as volumes)
+output/
+uploads/
+ollama_models/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Test and hypothesis artifacts
+.pytest_cache/
+.hypothesis/
+tests/
+
+# IDE and OS files
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Spec files
+.kiro/

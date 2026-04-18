@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video Highlight Generator</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #1e1e2e;
+      --surface:  #2a2a3e;
+      --surface2: #313145;
+      --accent:   #7c6af7;
+      --accent2:  #5a9cf8;
+      --text:     #cdd6f4;
+      --dim:      #6c7086;
+      --success:  #a6e3a1;
+      --error:    #f38ba8;
+      --warning:  #fab387;
+      --border:   #45475a;
+      --radius:   8px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Layout ───────────────────────────────────────────────────── */
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--accent);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    header h1 { font-size: 1.2rem; color: #fff; font-weight: 700; }
+
+    .main {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    /* ── Left panel ───────────────────────────────────────────────── */
+    .left-panel {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 20px 18px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── Right panel ──────────────────────────────────────────────── */
+    .right-panel {
+      display: grid;
+      grid-template-rows: 1fr auto;
+      overflow: hidden;
+    }
+
+    /* ── Section headings ─────────────────────────────────────────── */
+    .section-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent2);
+      margin-bottom: 10px;
+    }
+
+    /* ── Drop zone ────────────────────────────────────────────────── */
+    #drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 28px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      background: var(--bg);
+    }
+    #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(124, 106, 247, 0.08);
+    }
+    #drop-zone .drop-icon { font-size: 2rem; margin-bottom: 8px; }
+    #drop-zone p { color: var(--dim); font-size: 0.85rem; }
+    #drop-zone strong { color: var(--text); }
+    #file-input { display: none; }
+
+    #selected-file {
+      margin-top: 8px;
+      font-size: 0.8rem;
+      color: var(--accent2);
+      word-break: break-all;
+      min-height: 1.2em;
+    }
+
+    /* ── Options form ─────────────────────────────────────────────── */
+    .options-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .options-grid .full { grid-column: 1 / -1; }
+
+    label { display: block; font-size: 0.78rem; color: var(--dim); margin-bottom: 4px; }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      padding: 6px 9px;
+      font-size: 0.85rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+    }
+    .toggle-row input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
+
+    /* ── Run button ───────────────────────────────────────────────── */
+    #run-btn {
+      width: 100%;
+      padding: 10px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    #run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #run-btn:not(:disabled):hover { opacity: 0.88; }
+
+    /* ── Job queue ────────────────────────────────────────────────── */
+    .jobs-section { padding: 16px 20px; border-top: 1px solid var(--border); background: var(--surface); }
+
+    #job-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto; }
+
+    .job-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      background: var(--bg);
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: border-color 0.15s;
+    }
+    .job-item:hover { border-color: var(--border); }
+    .job-item.active { border-color: var(--accent); }
+
+    .job-status-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-queued  { background: var(--dim); }
+    .dot-running { background: var(--warning); animation: pulse 1s infinite; }
+    .dot-done    { background: var(--success); }
+    .dot-failed  { background: var(--error); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    .job-name { flex: 1; font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .job-badge {
+      font-size: 0.68rem;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-queued  { background: var(--border);  color: var(--dim); }
+    .badge-running { background: rgba(250,179,135,0.2); color: var(--warning); }
+    .badge-done    { background: rgba(166,227,161,0.2); color: var(--success); }
+    .badge-failed  { background: rgba(243,139,168,0.2); color: var(--error); }
+
+    .btn-rerun {
+      font-size: 0.68rem;
+      padding: 2px 8px;
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      background: transparent;
+      color: var(--accent);
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .btn-rerun:hover { background: var(--accent); color: #fff; }
+
+    /* ── Log panel ────────────────────────────────────────────────── */
+    .log-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 16px 20px;
+    }
+
+    /* ── Progress bar ─────────────────────────────────────────────── */
+    #progress-container {
+      display: none;
+      margin-bottom: 10px;
+    }
+    #progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    #progress-label {
+      font-size: 0.75rem;
+      color: var(--accent2);
+      font-weight: 600;
+    }
+    #progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    #log-output {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      font-family: "Cascadia Code", "Fira Code", "Courier New", monospace;
+      font-size: 0.78rem;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--text);
+      min-height: 200px;
+    }
+
+    .log-line-stage   { color: var(--accent2); font-weight: 600; }
+    .log-line-success { color: var(--success); }
+    .log-line-warning { color: var(--warning); }
+    .log-line-error   { color: var(--error); }
+    .log-line-done    { color: var(--success); font-weight: 700; }
+
+    /* ── Results panel ────────────────────────────────────────────── */
+    .results-panel {
+      padding: 0 20px 16px;
+      overflow-y: auto;
+      max-height: 320px;
+    }
+
+    #clips-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .clip-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .clip-card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .clip-rank {
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 700;
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .clip-name { flex: 1; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .clip-info { flex: 1; min-width: 0; }
+    .clip-info .clip-name { display: block; }
+    .clip-meta { font-size: 0.72rem; color: var(--dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .clip-actions { display: flex; gap: 6px; }
+
+    .btn-sm {
+      padding: 4px 10px;
+      border: none;
+      border-radius: 5px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn-sm:hover { opacity: 0.82; }
+    .btn-download { background: var(--accent2); color: #fff; }
+    .btn-why      { background: var(--border);  color: var(--text); }
+
+    .clip-why {
+      display: none;
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      font-family: "Cascadia Code", "Fira Code", monospace;
+      font-size: 0.72rem;
+      white-space: pre-wrap;
+      color: var(--dim);
+      background: var(--bg);
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .clip-why.open { display: block; }
+
+    /* ── Empty states ─────────────────────────────────────────────── */
+    .empty-state {
+      color: var(--dim);
+      font-size: 0.85rem;
+      padding: 12px 0;
+    }
+
+    /* ── Scrollbar ────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Responsive ───────────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      .main { grid-template-columns: 1fr; }
+      .left-panel { border-right: none; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Header ──────────────────────────────────────────────────── -->
+  <header>
+    <span style="font-size:1.4rem">🎬</span>
+    <h1>Video Highlight Generator</h1>
+  </header>
+
+  <div class="main">
+
+    <!-- ── Left panel: upload + options ──────────────────────────── -->
+    <aside class="left-panel">
+
+      <!-- Upload -->
+      <div>
+        <div class="section-title">Input Video</div>
+        <div id="drop-zone" role="button" tabindex="0" aria-label="Drop video file or click to browse">
+          <div class="drop-icon">📁</div>
+          <p><strong>Drag &amp; drop</strong> a video here</p>
+          <p>or click to browse</p>
+          <input type="file" id="file-input" accept="video/*,.mp4,.mov,.avi,.mkv,.m4v" />
+        </div>
+        <div id="selected-file"></div>
+      </div>
+
+      <!-- Options -->
+      <div>
+        <div class="section-title">Options</div>
+        <div class="options-grid">
+
+          <div>
+            <label for="opt-whisper">Whisper model</label>
+            <select id="opt-whisper">
+              <option value="tiny">tiny</option>
+              <option value="base" selected>base</option>
+              <option value="small">small</option>
+              <option value="medium">medium</option>
+              <option value="large">large</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="opt-topn">Top N clips</label>
+            <input type="number" id="opt-topn" value="5" min="1" max="20" />
+          </div>
+
+          <div class="full">
+            <label for="opt-outdir">Output directory (leave blank for default)</label>
+            <input type="text" id="opt-outdir" placeholder="e.g. /home/user/highlights" />
+          </div>
+
+          <div class="full">
+            <label for="opt-keywords">Keywords (comma-separated)</label>
+            <input type="text" id="opt-keywords"
+              value="crazy, important, watch this, incredible, insane" />
+          </div>
+
+          <div class="full">
+            <div class="toggle-row">
+              <input type="checkbox" id="opt-llm" />
+              <label for="opt-llm" style="margin:0">Enable LLM scoring (Ollama)</label>
+            </div>
+          </div>
+
+          <div class="full" id="llm-model-row" style="display:none">
+            <label for="opt-llm-model">LLM model name</label>
+            <input type="text" id="opt-llm-model" value="llama3" />
+          </div>
+
+          <div class="full">
+            <div class="toggle-row">
+              <input type="checkbox" id="opt-subtitles" checked />
+              <label for="opt-subtitles" style="margin:0">Burn subtitles into clips</label>
+            </div>
+            <div style="font-size:0.72rem;color:var(--dim);margin-top:3px">
+              When off, SRT files are still written alongside each clip
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Run button -->
+      <button id="run-btn" disabled>▶ Generate Highlights</button>
+
+    </aside>
+
+    <!-- ── Right panel: log + results ────────────────────────────── -->
+    <div class="right-panel">
+
+      <!-- Log -->
+      <div class="log-panel">
+        <div class="section-title" style="margin-bottom:8px">Progress Log</div>
+        <div id="progress-container">
+          <div id="progress-header">
+            <span id="progress-label">Stage 0 / 7</span>
+          </div>
+          <div id="progress-bar-container">
+            <div id="progress-bar"></div>
+          </div>
+        </div>
+        <div id="log-output"><span class="empty-state">Select a job from the queue to see its log, or submit a new job above.</span></div>
+      </div>
+
+      <!-- Results -->
+      <div class="results-panel">
+        <div class="section-title" style="margin-bottom:8px">Output Clips</div>
+        <div id="clips-list"><div class="empty-state">Clips will appear here once a job completes.</div></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Job queue (bottom strip) ──────────────────────────────── -->
+  <div class="jobs-section">
+    <div class="section-title" style="margin-bottom:8px">Job Queue</div>
+    <div id="job-list"><div class="empty-state">No jobs yet.</div></div>
+  </div>
+
+</div>
+
+<script>
+/* ================================================================
+   State
+   ================================================================ */
+let selectedFile = null;       // File object from input/drop
+let reuseVideoPath = null;     // Server-side path to reuse (re-run)
+let activeJobId  = null;       // Currently displayed job
+let activeSSE    = null;       // Active EventSource
+let jobs         = {};         // job_id -> job summary object
+let pollInterval = null;
+
+/* ================================================================
+   Drop zone
+   ================================================================ */
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
+const fileLabel  = document.getElementById('selected-file');
+const runBtn     = document.getElementById('run-btn');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
+
+dropZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f) setFile(f);
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) setFile(fileInput.files[0]);
+});
+
+function setFile(f) {
+  selectedFile = f;
+  reuseVideoPath = null;
+  fileLabel.textContent = f.name;
+  runBtn.disabled = false;
+}
+
+/* ================================================================
+   LLM toggle
+   ================================================================ */
+const llmCheck    = document.getElementById('opt-llm');
+const llmModelRow = document.getElementById('llm-model-row');
+llmCheck.addEventListener('change', () => {
+  llmModelRow.style.display = llmCheck.checked ? '' : 'none';
+});
+
+/* ================================================================
+   Submit job
+   ================================================================ */
+runBtn.addEventListener('click', async () => {
+  if (!selectedFile && !reuseVideoPath) return;
+
+  runBtn.disabled = true;
+  runBtn.textContent = reuseVideoPath ? '⏳ Submitting…' : '⏳ Uploading…';
+
+  const fd = new FormData();
+  if (reuseVideoPath) {
+    fd.append('reuse_video_path', reuseVideoPath);
+  } else {
+    fd.append('video', selectedFile);
+  }
+  fd.append('whisper_model', document.getElementById('opt-whisper').value);
+  fd.append('top_n',         document.getElementById('opt-topn').value);
+  fd.append('keywords',      document.getElementById('opt-keywords').value);
+  fd.append('llm_enabled',   llmCheck.checked ? 'true' : 'false');
+  fd.append('llm_model',     document.getElementById('opt-llm-model').value);
+  fd.append('output_dir',    document.getElementById('opt-outdir').value);
+  fd.append('burn_subtitles', document.getElementById('opt-subtitles').checked ? 'true' : 'false');
+
+  try {
+    const res = await fetch('/api/jobs', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+
+    runBtn.textContent = '▶ Generate Highlights';
+    runBtn.disabled = false;
+
+    // Switch to the new job
+    await refreshJobs();
+    selectJob(data.job_id);
+  } catch (err) {
+    alert('Error: ' + err.message);
+    runBtn.textContent = '▶ Generate Highlights';
+    runBtn.disabled = false;
+  }
+});
+
+/* ================================================================
+   Job list
+   ================================================================ */
+async function refreshJobs() {
+  try {
+    const res = await fetch('/api/jobs');
+    const list = await res.json();
+    list.forEach(j => { jobs[j.job_id] = j; });
+    renderJobList(list);
+  } catch (_) {}
+}
+
+function renderJobList(list) {
+  const el = document.getElementById('job-list');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty-state">No jobs yet.</div>';
+    return;
+  }
+  el.innerHTML = list.map(j => `
+    <div class="job-item ${j.job_id === activeJobId ? 'active' : ''}"
+         data-id="${j.job_id}" onclick="selectJob('${j.job_id}')">
+      <div class="job-status-dot dot-${j.status}"></div>
+      <div class="job-name" title="${esc(j.video_name)}">${esc(j.video_name)}</div>
+      <span class="job-badge badge-${j.status}">${j.status}</span>
+      ${(j.status === 'done' || j.status === 'failed') ? `
+        <button class="btn-rerun" onclick="event.stopPropagation(); rerunJob('${j.job_id}')">↺ Re-run</button>
+      ` : ''}
+    </div>
+  `).join('');
+}
+
+/* ================================================================
+   Select / display a job
+   ================================================================ */
+async function selectJob(jobId) {
+  activeJobId = jobId;
+
+  // Re-render job list to highlight active
+  const list = Object.values(jobs).sort((a,b) => b.created_at - a.created_at);
+  renderJobList(list);
+
+  // Close existing SSE
+  if (activeSSE) { activeSSE.close(); activeSSE = null; }
+
+  // Reset progress bar for the newly selected job
+  resetProgress();
+
+  // Load full job detail
+  try {
+    const res  = await fetch(`/api/jobs/${jobId}`);
+    const data = await res.json();
+    renderLog(data.log_lines || []);
+    renderClips(data.clips || [], jobId);
+
+    // If job is still running, open SSE stream
+    if (data.status === 'running' || data.status === 'queued') {
+      openSSE(jobId);
+    }
+  } catch (err) {
+    appendLog(`Error loading job: ${err.message}`, 'error');
+  }
+}
+
+/* ================================================================
+   SSE log streaming
+   ================================================================ */
+function openSSE(jobId) {
+  const es = new EventSource(`/api/jobs/${jobId}/log-stream`);
+  activeSSE = es;
+
+  es.onmessage = async (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'log') {
+      appendLog(msg.line);
+    } else if (msg.type === 'progress') {
+      updateProgress(msg.stage, msg.total);
+    } else if (msg.type === 'done') {
+      es.close();
+      activeSSE = null;
+      // Reload full job to get clips
+      await refreshJobs();
+      const res  = await fetch(`/api/jobs/${jobId}`);
+      const data = await res.json();
+      renderClips(data.clips || [], jobId);
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    activeSSE = null;
+  };
+}
+
+/* ================================================================
+   Log rendering
+   ================================================================ */
+const logEl = document.getElementById('log-output');
+
+function renderLog(lines) {
+  logEl.innerHTML = '';
+  lines.forEach(l => appendLog(l));
+}
+
+function appendLog(line) {
+  // Remove placeholder
+  const placeholder = logEl.querySelector('.empty-state');
+  if (placeholder) placeholder.remove();
+
+  const span = document.createElement('span');
+  span.className = classifyLogLine(line);
+  span.textContent = line + '\n';
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function classifyLogLine(line) {
+  if (/✓|Done in|complete/i.test(line))  return 'log-line-success';
+  if (/✗|error/i.test(line))             return 'log-line-error';
+  if (/warning|⚠/i.test(line))           return 'log-line-warning';
+  if (/\[.*\] Starting/i.test(line))     return 'log-line-stage';
+  if (/Pipeline complete/i.test(line))   return 'log-line-done';
+  return '';
+}
+
+/* ================================================================
+   Progress bar
+   ================================================================ */
+function updateProgress(stage, total) {
+  const container = document.getElementById('progress-container');
+  const bar       = document.getElementById('progress-bar');
+  const label     = document.getElementById('progress-label');
+  container.style.display = '';
+  label.textContent = `Stage ${stage} / ${total}`;
+  bar.style.width = `${Math.round((stage / total) * 100)}%`;
+}
+
+function resetProgress() {
+  const container = document.getElementById('progress-container');
+  const bar       = document.getElementById('progress-bar');
+  const label     = document.getElementById('progress-label');
+  container.style.display = 'none';
+  bar.style.width = '0%';
+  label.textContent = 'Stage 0 / 7';
+}
+
+/* ================================================================
+   Clips rendering
+   ================================================================ */
+function renderClips(clips, jobId) {
+  const el = document.getElementById('clips-list');
+  if (!clips.length) {
+    el.innerHTML = '<div class="empty-state">Clips will appear here once a job completes.</div>';
+    return;
+  }
+  el.innerHTML = clips.map((c, i) => `
+    <div class="clip-card">
+      <div class="clip-card-header" onclick="toggleWhy(${i})">
+        <div class="clip-rank">${i + 1}</div>
+        <div class="clip-info">
+          <div class="clip-name" title="${esc(c.name)}">${esc(c.name)}</div>
+          <div class="clip-meta">${esc(c.timestamp_range)}${c.duration ? '  · ' + esc(c.duration) : ''}${c.score ? '  · score=' + esc(c.score) : ''}</div>
+        </div>
+        <div class="clip-actions" onclick="event.stopPropagation()">
+          <a href="${esc(c.download_url)}" download="${esc(c.name)}">
+            <button class="btn-sm btn-download">⬇ Download</button>
+          </a>
+          <button class="btn-sm btn-why" onclick="toggleWhy(${i})">📄 Why chosen</button>
+        </div>
+      </div>
+      <pre class="clip-why" id="why-${i}">${esc(c.why_chosen || '(no report available)')}</pre>
+    </div>
+  `).join('');
+}
+
+function toggleWhy(i) {
+  const el = document.getElementById(`why-${i}`);
+  if (el) el.classList.toggle('open');
+}
+
+/* ================================================================
+   Re-run a completed job
+   ================================================================ */
+async function rerunJob(jobId) {
+  try {
+    const res  = await fetch(`/api/jobs/${jobId}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load job');
+
+    const opts = data.config_options || {};
+
+    // Pre-fill options panel
+    const whisperEl = document.getElementById('opt-whisper');
+    if (opts.whisper_model) whisperEl.value = opts.whisper_model;
+
+    const topnEl = document.getElementById('opt-topn');
+    if (opts.top_n != null) topnEl.value = opts.top_n;
+
+    const keywordsEl = document.getElementById('opt-keywords');
+    if (opts.keywords != null) keywordsEl.value = opts.keywords;
+
+    const llmEl = document.getElementById('opt-llm');
+    llmEl.checked = !!opts.llm_enabled;
+    llmModelRow.style.display = llmEl.checked ? '' : 'none';
+
+    const llmModelEl = document.getElementById('opt-llm-model');
+    if (opts.llm_model) llmModelEl.value = opts.llm_model;
+
+    const outdirEl = document.getElementById('opt-outdir');
+    outdirEl.value = opts.output_dir || '';
+
+    const subtitlesEl = document.getElementById('opt-subtitles');
+    subtitlesEl.checked = opts.burn_subtitles !== false;
+
+    // Handle original video file
+    const origPath = opts.original_video_path || '';
+    if (origPath) {
+      // Check if the file still exists on the server by attempting a HEAD request
+      // We use a lightweight approach: try to fetch job detail which already has the path.
+      // Since we can't do arbitrary filesystem checks from JS, we optimistically set
+      // reuseVideoPath and let the server return a 400 if the file is gone.
+      selectedFile = null;
+      reuseVideoPath = origPath;
+      const filename = origPath.split('/').pop() || origPath.split('\\').pop() || origPath;
+      fileLabel.textContent = `Re-using: ${filename} (server-side)`;
+      runBtn.disabled = false;
+    } else {
+      // No original path stored — just pre-fill options, user must re-upload
+      selectedFile = null;
+      reuseVideoPath = null;
+      fileLabel.textContent = 'Original file path unknown — please re-upload';
+      runBtn.disabled = true;
+    }
+
+    // Scroll left panel into view
+    document.querySelector('.left-panel').scrollTop = 0;
+  } catch (err) {
+    alert('Re-run error: ' + err.message);
+  }
+}
+
+/* ================================================================
+   Polling (refresh job statuses every 3s)
+   ================================================================ */
+async function startPolling() {
+  await refreshJobs();
+  pollInterval = setInterval(async () => {
+    await refreshJobs();
+    // Re-render active job list highlight
+    const list = Object.values(jobs).sort((a,b) => b.created_at - a.created_at);
+    renderJobList(list);
+  }, 3000);
+}
+
+/* ================================================================
+   Utilities
+   ================================================================ */
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/* ================================================================
+   Boot
+   ================================================================ */
+startPolling();
+</script>
+</body>
+</html>

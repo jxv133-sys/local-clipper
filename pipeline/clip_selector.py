@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import time
+
 from config import Config
 from pipeline.models import Clip, ScoredSegment, Transcript
+
+logger = logging.getLogger(__name__)
 
 
 def select_clips(
@@ -25,14 +30,31 @@ def select_clips(
     Returns:
         List of Clip objects sorted by rank (1-based, descending score).
     """
+    logger.info("ClipSelector starting — %d scored segment(s), video_duration=%.1fs",
+                len(scored_segments), video_duration)
+    t0 = time.time()
+
     if not scored_segments:
         return []
 
     # Step 1: Sort descending by clip_score
     sorted_segments = sorted(scored_segments, key=lambda s: s.clip_score, reverse=True)
 
-    # Step 2: Select top N
-    top_segments = sorted_segments[: config.top_n_clips]
+    # Step 2: Apply minimum text score threshold to filter audio-only clips.
+    # Segments whose text_score is below the threshold are deprioritised.
+    # However, if filtering would leave fewer candidates than top_n_clips,
+    # fall back to including the filtered-out segments so we always have
+    # enough material to fill the requested clip count.
+    threshold = config.min_text_score_for_selection
+    above_threshold = [s for s in sorted_segments if s.text_score >= threshold]
+    if len(above_threshold) >= config.top_n_clips:
+        candidates = above_threshold
+    else:
+        # Not enough above-threshold candidates — use all segments as fallback
+        candidates = sorted_segments
+
+    # Step 3: Select top N
+    top_segments = candidates[: config.top_n_clips]
 
     # Build a lookup: segment object -> index in transcript.segments
     # We match by identity first, then by (start, end, text) equality
@@ -51,7 +73,7 @@ def select_clips(
                 return i
         return -1
 
-    # Step 3: Expand each selected segment to reach min_clip_duration
+    # Step 4: Expand each selected segment to reach min_clip_duration
     clips: list[Clip] = []
     for scored_seg in top_segments:
         seed_idx = find_segment_index(scored_seg.segment)
@@ -83,25 +105,37 @@ def select_clips(
                 # Try to expand in the direction that keeps us within max_clip_duration
                 expanded = False
 
-                # Try left first if it would not exceed max duration
+                # Try left first if it would not exceed max duration and gap is within limit
                 if can_expand_left and left_seg is not None:
-                    new_start = left_seg.start
-                    new_duration = clip_end - new_start
-                    if new_duration <= config.max_clip_duration:
-                        clip_start = new_start
-                        included_indices.insert(0, left_idx)
-                        left_idx -= 1
-                        expanded = True
+                    left_gap = clip_start - left_seg.end
+                    if left_gap > config.max_expansion_gap:
+                        # Silence gap too large — stop expanding left
+                        can_expand_left = False
+                        left_idx = -1  # prevent further left expansion
+                    else:
+                        new_start = left_seg.start
+                        new_duration = clip_end - new_start
+                        if new_duration <= config.max_clip_duration:
+                            clip_start = new_start
+                            included_indices.insert(0, left_idx)
+                            left_idx -= 1
+                            expanded = True
 
-                # Try right if we still need more duration
+                # Try right if we still need more duration and gap is within limit
                 if (clip_end - clip_start) < config.min_clip_duration and can_expand_right and right_seg is not None:
-                    new_end = right_seg.end
-                    new_duration = new_end - clip_start
-                    if new_duration <= config.max_clip_duration:
-                        clip_end = new_end
-                        included_indices.append(right_idx)
-                        right_idx += 1
-                        expanded = True
+                    right_gap = right_seg.start - clip_end
+                    if right_gap > config.max_expansion_gap:
+                        # Silence gap too large — stop expanding right
+                        can_expand_right = False
+                        right_idx = len(transcript.segments)  # prevent further right expansion
+                    else:
+                        new_end = right_seg.end
+                        new_duration = new_end - clip_start
+                        if new_duration <= config.max_clip_duration:
+                            clip_end = new_end
+                            included_indices.append(right_idx)
+                            right_idx += 1
+                            expanded = True
 
                 if not expanded:
                     break
@@ -120,16 +154,26 @@ def select_clips(
             )
         )
 
-    # Step 4: Detect and handle overlaps
+    # Step 5: Detect and handle overlaps
     clips = _resolve_overlaps(clips, config.max_clip_duration)
 
-    # Step 5: Assign 1-based rank by score (descending)
+    # Step 6: Assign 1-based rank by score (descending)
     clips_by_score = sorted(clips, key=lambda c: c.score, reverse=True)
     for rank, clip in enumerate(clips_by_score, start=1):
         clip.rank = rank
 
-    # Step 6: Return sorted by rank
-    return sorted(clips_by_score, key=lambda c: c.rank)
+    # Step 7: Return sorted by rank
+    result = sorted(clips_by_score, key=lambda c: c.rank)
+
+    elapsed = time.time() - t0
+    logger.info("ClipSelector complete — %d clip(s) selected in %.1fs", len(result), elapsed)
+    for clip in result:
+        logger.info(
+            "  Clip #%d: %.1fs → %.1fs (duration=%.1fs, score=%.3f)",
+            clip.rank, clip.start, clip.end, clip.end - clip.start, clip.score,
+        )
+
+    return result
 
 
 def _resolve_overlaps(clips: list[Clip], max_clip_duration: float) -> list[Clip]:

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+import time
 
 from config import Config
 from pipeline.exceptions import ClipExtractionError
 from pipeline.models import Clip
+
+logger = logging.getLogger(__name__)
 
 
 def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[str]:
@@ -33,9 +37,13 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
     """
     os.makedirs(config.output_dir, exist_ok=True)
 
+    logger.info("ClipExtractor starting — %d clip(s) to extract", len(clips))
+    t0_total = time.time()
+
     output_paths: list[str] = []
 
     for clip in sorted(clips, key=lambda c: c.rank):
+        t0 = time.time()
         filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
         output_path = os.path.join(config.output_dir, filename)
 
@@ -58,6 +66,8 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
 
         if probed_duration is not None and abs(probed_duration - requested_duration) > 1.0:
             # --- Attempt 2: re-encode for accurate cut points ---
+            logger.info("  Clip #%d: stream-copy duration mismatch (%.1fs vs %.1fs) — re-encoding",
+                        clip.rank, probed_duration, requested_duration)
             _run_ffmpeg(
                 [
                     "ffmpeg", "-y",
@@ -69,8 +79,11 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
                 output_path,
             )
 
+        file_size_mb = os.path.getsize(output_path) / (1024 * 1024) if os.path.exists(output_path) else 0.0
+        logger.info("  Clip #%d: %s (%.2f MB, %.1fs)", clip.rank, output_path, file_size_mb, time.time() - t0)
         output_paths.append(output_path)
 
+    logger.info("ClipExtractor complete — %d clip(s) in %.1fs", len(output_paths), time.time() - t0_total)
     return output_paths
 
 

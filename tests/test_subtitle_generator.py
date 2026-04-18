@@ -251,6 +251,34 @@ class TestSerializeSRT:
         assert parse_srt("") == []
 
 
+class TestFontSearchList:
+    """Tests for cross-platform font fallback paths."""
+
+    def test_linux_font_path_in_search_list(self) -> None:
+        """Linux LiberationSans font path is included in the font search list."""
+        import inspect
+        import pipeline.subtitle_generator as sg
+
+        source = inspect.getsource(sg._burn_subtitles)
+        assert "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" in source
+
+    def test_linux_dejavu_font_path_in_search_list(self) -> None:
+        """Linux DejaVuSans font path is included in the font search list."""
+        import inspect
+        import pipeline.subtitle_generator as sg
+
+        source = inspect.getsource(sg._burn_subtitles)
+        assert "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" in source
+
+    def test_windows_font_path_in_search_list(self) -> None:
+        """Windows Arial font path is included in the font search list."""
+        import inspect
+        import pipeline.subtitle_generator as sg
+
+        source = inspect.getsource(sg._burn_subtitles)
+        assert "C:/Windows/Fonts/arial.ttf" in source
+
+
 class TestGenerateSubtitles:
     """Unit tests for generate_subtitles."""
 

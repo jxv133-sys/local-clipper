@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
+import time
 
 from config import Config
 from pipeline.exceptions import SubtitleError
 from pipeline.models import Clip, SRTEntry, Transcript
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +132,11 @@ def generate_subtitles(
     os.makedirs(config.output_dir, exist_ok=True)
     final_paths: list[str] = []
 
+    logger.info("SubtitleGenerator starting — %d clip(s)", len(clips))
+    t0_total = time.time()
+
     for clip, raw_path in zip(clips, clip_paths):
+        t0 = time.time()
         # 1. Collect in-range, non-empty segments
         srt_entries: list[SRTEntry] = []
         entry_index = 1
@@ -151,15 +159,20 @@ def generate_subtitles(
         with open(srt_path, "w", encoding="utf-8") as fh:
             fh.write(serialize_srt(srt_entries))
 
-        # 3. Burn subtitles into the clip using FFmpeg
-        # Output to a temp name then replace the original
-        burned_path = base + "_subtitled.mp4"
-        _burn_subtitles(raw_path, srt_path, burned_path)
+        # 3. Optionally burn subtitles into the clip
+        if config.burn_subtitles:
+            burned_path = base + "_subtitled.mp4"
+            _burn_subtitles(raw_path, srt_path, burned_path)
+            os.replace(burned_path, raw_path)
+            logger.info("  Clip #%d: %d subtitle entry(ies) burned, output: %s (%.1fs)",
+                        clip.rank, len(srt_entries), raw_path, time.time() - t0)
+        else:
+            logger.info("  Clip #%d: %d subtitle entry(ies) written to SRT (burn disabled), output: %s (%.1fs)",
+                        clip.rank, len(srt_entries), raw_path, time.time() - t0)
 
-        # Replace the raw clip with the subtitled version
-        os.replace(burned_path, raw_path)
         final_paths.append(raw_path)
 
+    logger.info("SubtitleGenerator complete — %d clip(s) in %.1fs", len(final_paths), time.time() - t0_total)
     return final_paths
 
 
@@ -239,19 +252,32 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
 
             # Try to load a system font, fall back to default
             font = None
+            _selected_font_path = None
             for font_path in [
+                # macOS
                 "/System/Library/Fonts/Helvetica.ttc",
                 "/System/Library/Fonts/Arial.ttf",
                 "/Library/Fonts/Arial.ttf",
+                # Linux
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+                # Windows
+                "C:/Windows/Fonts/arial.ttf",
+                "C:/Windows/Fonts/Arial.ttf",
             ]:
                 if os.path.exists(font_path):
                     try:
                         font = ImageFont.truetype(font_path, font_size)
+                        _selected_font_path = font_path
                         break
                     except Exception:
                         pass
             if font is None:
                 font = ImageFont.load_default()
+                logger.debug("Subtitle font: using FFmpeg default (no font found)")
+            else:
+                logger.debug("Subtitle font selected: %s", _selected_font_path)
 
             # Measure text
             bbox = draw.textbbox((0, 0), text, font=font)
