@@ -302,9 +302,32 @@ def _call_llm(config: Config, prompt: str) -> str:
             f"LLM endpoint unreachable at {config.llm_endpoint!r}: {exc}"
         ) from exc
     try:
-        return str(response.json().get("response", ""))
+        response_data = response.json()
+        raw_response = str(response_data.get("response", ""))
+        if not raw_response.strip():
+            # Log additional debugging info for empty responses
+            logger.warning(
+                "LLM returned empty response. Status: %d, full response: %r",
+                response.status_code, response_data
+            )
+        return raw_response
     except (ValueError, KeyError, TypeError):
         return response.text
+
+
+def _check_llm_model_available(config: Config) -> bool:
+    """Check if the configured LLM model is available and responding."""
+    try:
+        # Try a simple prompt to test model availability
+        test_prompt = "Respond with 'OK' if you can understand this message."
+        payload = {"model": config.llm_model, "prompt": test_prompt, "stream": False}
+        response = requests.post(config.llm_endpoint, json=payload, timeout=30)
+        response_data = response.json()
+        response_text = str(response_data.get("response", "")).strip()
+        return bool(response_text and response_text.lower() != "failed")
+    except Exception as exc:
+        logger.warning("LLM model availability check failed: %s", exc)
+        return False
 
 
 def _build_candidate_windows(
@@ -543,8 +566,9 @@ def _score_window_with_llm(
     if score_match is None:
         logger.warning(
             "LLM returned no parseable SCORE for window at %.1fs; defaulting to 0.0. "
-            "Response: %r",
-            seed.start, raw_response[:300],
+            "Response: %r. This may indicate the model '%s' is not responding correctly. "
+            "Try: ollama pull %s",
+            seed.start, raw_response[:300], config.llm_model, config.llm_model
         )
         return 0.0, None
 
@@ -644,38 +668,47 @@ def score_segments(
     llm_metadatas: list[LLMMetadata | None] = [None] * len(segments)
 
     if config.llm_enabled and segments:
-        candidates = _build_candidate_windows(segments, text_scores, audio_scores, config, spike_scores)
+        # Check if LLM model is available before attempting scoring
+        if not _check_llm_model_available(config):
+            logger.warning(
+                "LLM model '%s' is not available at %s. "
+                "Skipping LLM scoring. Make sure the model is pulled: ollama pull %s",
+                config.llm_model, config.llm_endpoint, config.llm_model
+            )
+            config.llm_enabled = False  # Disable for this run
+        else:
+            candidates = _build_candidate_windows(segments, text_scores, audio_scores, config, spike_scores)
 
-        logger.info(
-            "Scorer LLM: %d candidate window(s) selected from %d segments "
-            "(spaced >= %.0fs apart, cap=%d)",
-            len(candidates), len(segments),
-            config.min_clip_duration, config.llm_max_candidates,
-        )
+            logger.info(
+                "Scorer LLM: %d candidate window(s) selected from %d segments "
+                "(spaced >= %.0fs apart, cap=%d)",
+                len(candidates), len(segments),
+                config.min_clip_duration, config.llm_max_candidates,
+            )
 
-        for seed_idx, pre_score in candidates:
-            try:
-                llm_score, metadata = _score_window_with_llm(
-                    config, seed_idx, segments, audio_scores, raw_rms,
-                    global_rms_mean, global_rms_max
-                )
-            except LLMScoringError as exc:
-                logger.warning("LLM scoring failed for window at %.1fs: %s",
-                               segments[seed_idx].start, exc)
-                llm_score, metadata = 0.0, None
+            for seed_idx, pre_score in candidates:
+                try:
+                    llm_score, metadata = _score_window_with_llm(
+                        config, seed_idx, segments, audio_scores, raw_rms,
+                        global_rms_mean, global_rms_max
+                    )
+                except LLMScoringError as exc:
+                    logger.warning("LLM scoring failed for window at %.1fs: %s",
+                                   segments[seed_idx].start, exc)
+                    llm_score, metadata = 0.0, None
 
-            # Apply the LLM score to the seed and all segments within the
-            # same window (within half a clip-length).  This means nearby
-            # segments benefit from the LLM's assessment of the moment.
-            seed = segments[seed_idx]
-            half = config.min_clip_duration / 2.0
-            for i, seg in enumerate(segments):
-                if seg.end > seed.start - half and seg.start < seed.end + half:
-                    # Take the max so a segment in two overlapping windows
-                    # keeps the better LLM score.
-                    if llm_score > llm_scores[i]:
-                        llm_scores[i] = llm_score
-                        llm_metadatas[i] = metadata
+                # Apply the LLM score to the seed and all segments within the
+                # same window (within half a clip-length).  This means nearby
+                # segments benefit from the LLM's assessment of the moment.
+                seed = segments[seed_idx]
+                half = config.min_clip_duration / 2.0
+                for i, seg in enumerate(segments):
+                    if seg.end > seed.start - half and seg.start < seed.end + half:
+                        # Take the max so a segment in two overlapping windows
+                        # keeps the better LLM score.
+                        if llm_score > llm_scores[i]:
+                            llm_scores[i] = llm_score
+                            llm_metadatas[i] = metadata
 
     # Assemble ScoredSegment objects
     scored: list[ScoredSegment] = []

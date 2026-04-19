@@ -412,6 +412,14 @@ def create_job():
         cfg.text_weight = 0.35
         cfg.audio_weight = 0.25
 
+        # Validate LLM model availability
+        from pipeline.scorer import _check_llm_model_available
+        if not _check_llm_model_available(cfg):
+            return jsonify({
+                "error": f"LLM model '{llm_model}' is not available. "
+                        f"Make sure Ollama is running and the model is pulled: ollama pull {llm_model}"
+            }), 400
+
     # Create and register job
     job_id = str(uuid.uuid4())
     job = Job(job_id=job_id, video_path=str(upload_path), config=cfg)

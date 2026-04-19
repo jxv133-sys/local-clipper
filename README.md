@@ -273,7 +273,11 @@ If you bind Ollama to a different host port, set `OLLAMA_HOST` before running th
 export OLLAMA_HOST=http://localhost:11435
 python3 main.py video.mp4 --llm
 ```
+**Note:** Make sure to pull your desired LLM model in the Ollama container first:
 
+```bash
+docker compose exec ollama ollama pull llama3
+```
 ---
 
 ## Accessing from another machine
@@ -346,6 +350,19 @@ LLMScoringError: LLM endpoint unreachable at 'http://localhost:11434/api/generat
 - Make sure Ollama is running: `ollama serve` or `systemctl start ollama`
 - Make sure you've pulled a model: `ollama pull llama3`
 - LLM scoring is optional — omit `--llm` to skip it
+
+---
+
+**LLM returns empty responses**
+
+```
+LLM returned no parseable SCORE for window at 123.4s; defaulting to 0.0. Response: ''
+```
+
+- The model may not be loaded: `ollama pull llama3` (or your chosen model)
+- Try a smaller model if the current one is too slow: `--llm-model llama3.2:1b`
+- Check Ollama logs: `ollama serve` in a separate terminal to see error messages
+- LLM scoring will fall back to text+audio scoring only
 
 ---
 
