@@ -105,9 +105,15 @@ class Job:
             except queue.Full:
                 pass
 
-    def add_progress(self, stage: int, total: int) -> None:
+    def add_progress(self, stage: int, total: int, stage_name: str = "", percentage: int = 0) -> None:
         """Emit a progress event to all SSE subscribers (not stored in log_lines)."""
-        msg = json.dumps({"type": "progress", "stage": stage, "total": total})
+        msg = json.dumps({
+            "type": "progress",
+            "stage": stage,
+            "total": total,
+            "stage_name": stage_name,
+            "percentage": percentage
+        })
         sentinel = f"__PROGRESS__:{msg}"
         for q in list(self._subscribers):
             try:
@@ -209,60 +215,65 @@ def _run_pipeline_for_job(job: Job) -> None:
     pipeline_logger.addHandler(handler)
 
     try:
-        # Stage 1: Audio extraction
-        job.add_progress(1, 7)
+        # Stage 1: Audio extraction (0% → 5%)
+        job.add_progress(1, 7, "Audio Extraction", 5)
         log("[AudioExtractor] Starting...")
         t0 = time.time()
         wav_path = extract_audio(job.config, job.video_path)
         log(f"[AudioExtractor] Done in {time.time() - t0:.1f}s")
 
-        # Stage 2: Transcription
-        job.add_progress(2, 7)
+        # Stage 2: Transcription (5% → 60%)
+        job.add_progress(2, 7, "Transcription", 10)
         log("[Transcriber] Starting...")
         t0 = time.time()
         transcript = transcribe(job.config, wav_path)
         log(f"[Transcriber] Done in {time.time() - t0:.1f}s — {len(transcript.segments)} segment(s)")
+        job.add_progress(2, 7, "Transcription", 60)
 
         if not transcript.segments:
             log("[Transcriber] Warning: No speech detected — scoring on audio energy only")
 
-        # Stage 3: Scoring
-        job.add_progress(3, 7)
+        # Stage 3: Scoring (60% → 70%)
+        job.add_progress(3, 7, "Scoring Segments", 65)
         log("[Scorer] Starting...")
         t0 = time.time()
         scored_segments = score_segments(job.config, transcript, wav_path)
         log(f"[Scorer] Done in {time.time() - t0:.1f}s — {len(scored_segments)} segment(s) scored")
+        job.add_progress(3, 7, "Scoring Segments", 70)
 
         if not scored_segments:
             raise PipelineError("No segments to score. The video may have no audio content.")
 
-        # Stage 4: Clip selection
-        job.add_progress(4, 7)
+        # Stage 4: Clip selection (70% → 75%)
+        job.add_progress(4, 7, "Selecting Clips", 72)
         log("[ClipSelector] Starting...")
         t0 = time.time()
         video_duration = _get_video_duration(job.video_path)
         clips = select_clips(job.config, scored_segments, transcript, video_duration)
         log(f"[ClipSelector] Done in {time.time() - t0:.1f}s — {len(clips)} clip(s) selected")
+        job.add_progress(4, 7, "Selecting Clips", 75)
 
         if not clips:
             raise PipelineError("No clips selected. Try lowering Top N or check the video.")
 
-        # Stage 5: Clip extraction
-        job.add_progress(5, 7)
+        # Stage 5: Clip extraction (75% → 85%)
+        job.add_progress(5, 7, "Extracting Clips", 77)
         log("[ClipExtractor] Starting...")
         t0 = time.time()
         clip_paths = extract_clips(job.config, clips, job.video_path)
         log(f"[ClipExtractor] Done in {time.time() - t0:.1f}s")
+        job.add_progress(5, 7, "Extracting Clips", 85)
 
-        # Stage 6: Subtitle generation
-        job.add_progress(6, 7)
+        # Stage 6: Subtitle generation (85% → 95%)
+        job.add_progress(6, 7, "Generating Subtitles", 87)
         log("[SubtitleGenerator] Starting...")
         t0 = time.time()
         final_paths = generate_subtitles(job.config, clips, transcript, clip_paths)
         log(f"[SubtitleGenerator] Done in {time.time() - t0:.1f}s")
+        job.add_progress(6, 7, "Generating Subtitles", 95)
 
-        # Stage 7: Why-chosen reports
-        job.add_progress(7, 7)
+        # Stage 7: Why-chosen reports (95% → 100%)
+        job.add_progress(7, 7, "Generating Reports", 97)
         log("[ReportGenerator] Writing selection reports...")
         t0 = time.time()
         result_clips: list[dict] = []
@@ -284,6 +295,7 @@ def _run_pipeline_for_job(job: Job) -> None:
                 "score": f"{clip.score:.2f}",
             })
         log(f"[ReportGenerator] Done in {time.time() - t0:.1f}s — {len(result_clips)} report(s)")
+        job.add_progress(7, 7, "Complete", 100)
 
         # Clean up temp dir
         shutil.rmtree(job.config.work_dir, ignore_errors=True)
@@ -504,6 +516,49 @@ def download_clip(job_id: str, clip_index: int):
         download_name=os.path.basename(clip_path),
         mimetype="video/mp4",
     )
+
+
+# ---------------------------------------------------------------------------
+# API: Ollama models
+# ---------------------------------------------------------------------------
+
+@app.route("/api/ollama/models", methods=["GET"])
+def list_ollama_models():
+    """Return a list of locally available Ollama models."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return jsonify({"error": "Ollama is not running or not installed", "models": []}), 200
+
+        # Parse output: skip header line, extract model names from first column
+        lines = result.stdout.strip().split("\n")
+        models = []
+        for line in lines[1:]:  # skip header
+            if line.strip():
+                # Model name is the first column (e.g., "llama3:latest" or "mistral")
+                parts = line.split()
+                if parts:
+                    model_name = parts[0]
+                    # Strip :latest suffix for cleaner display
+                    if model_name.endswith(":latest"):
+                        model_name = model_name[:-7]
+                    models.append(model_name)
+
+        return jsonify({"models": models, "error": None})
+
+    except FileNotFoundError:
+        return jsonify({"error": "Ollama command not found. Install from https://ollama.ai", "models": []}), 200
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Ollama command timed out", "models": []}), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to list models: {e}", "models": []}), 200
 
 
 # ---------------------------------------------------------------------------

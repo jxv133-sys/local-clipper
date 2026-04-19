@@ -113,8 +113,11 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
 ## Notes
 
 - Tasks 1–22 are complete
-- Tasks 23–42 are improvements identified from end-to-end testing on real footage
-- Priority order: scoring quality (23–27) → clip selection (28–30) → output (31–35) → web UI (36–39) → infrastructure (40–42)
+- Tasks 23–53 are complete (all improvements from end-to-end testing)
+- Tasks 54-56 are complete (audio spike priority improvements)
+- Tasks 58-60 are complete (LLM model dropdown, Docker optimization, progress updates)
+- Task 57 and 61 remain (advanced settings panel, job cancellation)
+- Max clip duration increased to 100s (from 60s) — clips can be trimmed in post
 - The tkinter `gui.py` can be kept for local macOS use but is no longer the primary UI
 - The LLM scoring path is optional at runtime via `config.llm_enabled`
 - All pushes go to `kiro/main` (plain `git push` works)
@@ -372,3 +375,67 @@ User feedback: Clip #4 (the outro) was actually the best clip. The evaluation wa
   - Compare clip selection to full-test-3: are more audio spike moments selected?
   - Verify that 2 out of 10 clips (20%) are pure audio spike moments (high spike_score, low text_score)
   - Document findings in output/full-test-4/COMPARISON_REPORT.md
+
+
+---
+
+## Web UI Improvements & Docker Optimization
+
+User feedback: Improve web GUI to give users more control over pipeline settings. Add LLM model dropdown showing only downloaded models. Optimize Docker Compose resource allocation for faster processing.
+
+- [ ] 57. Add advanced settings panel to web UI with all config options
+  - Expand the options panel to include all major config fields:
+    - Whisper model (dropdown: tiny/base/small/medium/large)
+    - Top N clips (number input, default 6)
+    - Min/max clip duration (number inputs, defaults 30s/60s)
+    - Keywords (text area, comma-separated)
+    - LLM toggle + model dropdown (see task 58)
+    - Text/audio/LLM weights (sliders, 0.0-1.0, must sum to 1.0)
+    - Min clip spacing (number input, default 300s)
+    - Audio spike percentage (slider, 0.0-1.0, default 0.2)
+    - Burn subtitles toggle (checkbox, default true)
+  - Group settings into collapsible sections: "Basic", "Scoring", "Advanced"
+  - Add tooltips explaining each setting
+  - Store settings in localStorage so they persist across page reloads
+
+- [ ] 58. Add LLM model dropdown showing only downloaded Ollama models
+  - Add new API endpoint: `GET /api/ollama/models` that calls `ollama list` and returns available models
+  - Parse `ollama list` output to extract model names (e.g., "llama3", "llama3.2:1b", "mistral")
+  - Web UI: replace text input with dropdown populated from `/api/ollama/models`
+  - Show "No models available" message if Ollama is not running or no models are pulled
+  - Add "Refresh models" button to re-fetch the list
+  - If Ollama is not running, show a helpful message: "Start Ollama with: ollama serve"
+
+- [ ] 59. Optimize Docker Compose resource allocation for faster processing
+  - Add resource limits and reservations to `docker-compose.yml`:
+    - `app` service:
+      - `cpus: '4.0'` (reserve 4 CPU cores for faster-whisper and FFmpeg)
+      - `mem_limit: 8g` (8GB RAM for Whisper model + transcription buffers)
+      - `mem_reservation: 4g` (guarantee 4GB minimum)
+    - `ollama` service:
+      - `cpus: '2.0'` (reserve 2 CPU cores for LLM inference)
+      - `mem_limit: 4g` (4GB RAM for LLM model)
+      - `mem_reservation: 2g` (guarantee 2GB minimum)
+  - Add `deploy.resources` section for Docker Swarm compatibility
+  - Add environment variables to tune performance:
+    - `OMP_NUM_THREADS=4` (OpenMP threads for faster-whisper)
+    - `NUMBA_NUM_THREADS=4` (Numba threads for audio processing)
+  - Document resource requirements in README.md: "Recommended: 6+ CPU cores, 12GB+ RAM"
+
+- [x] 60. Add real-time progress updates to web UI
+  - Currently progress is only shown via SSE log streaming
+  - Add structured progress events with percentage completion:
+    - Audio extraction: 5%
+    - Transcription: 5% → 60% (longest stage, show incremental progress)
+    - Scoring: 60% → 70%
+    - Clip selection: 70% → 75%
+    - Clip extraction: 75% → 85%
+    - Subtitle generation: 85% → 100%
+  - Show a progress bar with current stage name and percentage
+  - Estimate time remaining based on video duration and current stage
+
+- [ ] 61. Add job cancellation to web UI
+  - Add "Cancel" button next to running jobs
+  - New API endpoint: `POST /api/jobs/<job_id>/cancel` that terminates the background process
+  - Update job status to "cancelled" and clean up temp files
+  - Show confirmation dialog: "Are you sure you want to cancel this job?"

@@ -244,6 +244,11 @@
       color: var(--accent2);
       font-weight: 600;
     }
+    #progress-percentage {
+      font-size: 0.75rem;
+      color: var(--dim);
+      font-weight: 600;
+    }
     #progress-bar-container {
       width: 100%;
       height: 6px;
@@ -431,8 +436,14 @@
           </div>
 
           <div class="full" id="llm-model-row" style="display:none">
-            <label for="opt-llm-model">LLM model name</label>
-            <input type="text" id="opt-llm-model" value="llama3" />
+            <label for="opt-llm-model">LLM model</label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <select id="opt-llm-model" style="flex:1">
+                <option value="">Loading models...</option>
+              </select>
+              <button id="refresh-models-btn" style="padding:6px 10px;background:var(--border);color:var(--text);border:none;border-radius:5px;cursor:pointer;font-size:0.75rem" title="Refresh model list">↻</button>
+            </div>
+            <div id="llm-model-status" style="font-size:0.72rem;color:var(--dim);margin-top:3px"></div>
           </div>
 
           <div class="full">
@@ -462,6 +473,7 @@
         <div id="progress-container">
           <div id="progress-header">
             <span id="progress-label">Stage 0 / 7</span>
+            <span id="progress-percentage">0%</span>
           </div>
           <div id="progress-bar-container">
             <div id="progress-bar"></div>
@@ -533,13 +545,63 @@ function setFile(f) {
 }
 
 /* ================================================================
-   LLM toggle
+   LLM toggle & model dropdown
    ================================================================ */
 const llmCheck    = document.getElementById('opt-llm');
 const llmModelRow = document.getElementById('llm-model-row');
+const llmModelSelect = document.getElementById('opt-llm-model');
+const llmModelStatus = document.getElementById('llm-model-status');
+const refreshModelsBtn = document.getElementById('refresh-models-btn');
+
 llmCheck.addEventListener('change', () => {
   llmModelRow.style.display = llmCheck.checked ? '' : 'none';
+  if (llmCheck.checked) {
+    fetchOllamaModels();
+  }
 });
+
+refreshModelsBtn.addEventListener('click', fetchOllamaModels);
+
+async function fetchOllamaModels() {
+  llmModelStatus.textContent = 'Loading...';
+  llmModelSelect.innerHTML = '<option value="">Loading...</option>';
+  
+  try {
+    const res = await fetch('/api/ollama/models');
+    const data = await res.json();
+    
+    if (data.error) {
+      llmModelStatus.textContent = data.error;
+      llmModelStatus.style.color = 'var(--error)';
+      llmModelSelect.innerHTML = '<option value="">No models available</option>';
+      return;
+    }
+    
+    if (!data.models || data.models.length === 0) {
+      llmModelStatus.textContent = 'No models found. Pull a model: ollama pull llama3';
+      llmModelStatus.style.color = 'var(--warning)';
+      llmModelSelect.innerHTML = '<option value="">No models available</option>';
+      return;
+    }
+    
+    // Populate dropdown with available models
+    llmModelSelect.innerHTML = data.models.map(m => 
+      `<option value="${esc(m)}">${esc(m)}</option>`
+    ).join('');
+    
+    llmModelStatus.textContent = `${data.models.length} model(s) available`;
+    llmModelStatus.style.color = 'var(--success)';
+  } catch (err) {
+    llmModelStatus.textContent = 'Failed to fetch models: ' + err.message;
+    llmModelStatus.style.color = 'var(--error)';
+    llmModelSelect.innerHTML = '<option value="">Error loading models</option>';
+  }
+}
+
+// Fetch models on page load if LLM is already checked
+if (llmCheck.checked) {
+  fetchOllamaModels();
+}
 
 /* ================================================================
    Submit job
@@ -657,7 +719,7 @@ function openSSE(jobId) {
     if (msg.type === 'log') {
       appendLog(msg.line);
     } else if (msg.type === 'progress') {
-      updateProgress(msg.stage, msg.total);
+      updateProgress(msg.stage, msg.total, msg.stage_name, msg.percentage);
     } else if (msg.type === 'done') {
       es.close();
       activeSSE = null;
@@ -709,22 +771,37 @@ function classifyLogLine(line) {
 /* ================================================================
    Progress bar
    ================================================================ */
-function updateProgress(stage, total) {
+function updateProgress(stage, total, stageName, percentage) {
   const container = document.getElementById('progress-container');
   const bar       = document.getElementById('progress-bar');
   const label     = document.getElementById('progress-label');
+  const pct       = document.getElementById('progress-percentage');
+  
   container.style.display = '';
-  label.textContent = `Stage ${stage} / ${total}`;
-  bar.style.width = `${Math.round((stage / total) * 100)}%`;
+  
+  // Update label with stage name if provided
+  if (stageName) {
+    label.textContent = `${stageName} (${stage} / ${total})`;
+  } else {
+    label.textContent = `Stage ${stage} / ${total}`;
+  }
+  
+  // Update percentage display and bar width
+  const displayPct = percentage || Math.round((stage / total) * 100);
+  pct.textContent = `${displayPct}%`;
+  bar.style.width = `${displayPct}%`;
 }
 
 function resetProgress() {
   const container = document.getElementById('progress-container');
   const bar       = document.getElementById('progress-bar');
   const label     = document.getElementById('progress-label');
+  const pct       = document.getElementById('progress-percentage');
+  
   container.style.display = 'none';
   bar.style.width = '0%';
   label.textContent = 'Stage 0 / 7';
+  pct.textContent = '0%';
 }
 
 /* ================================================================

@@ -84,7 +84,7 @@ class Config:
     # Clip selection
     top_n_clips: int = 6             # Raised from 5
     min_clip_duration: float = 30.0  # Raised from 20s — clips shorter than this feel too brief
-    max_clip_duration: float = 60.0  # Raised from 45s to accommodate the longer minimum
+    max_clip_duration: float = 100.0  # Allow longer clips — can be trimmed in post
     max_expansion_gap: float = 15.0  # Stop expanding across silence gaps > this many seconds
     # Minimum seconds of content to capture *after* the seed segment (reaction tail).
     # Expansion always fills forward first to guarantee the reaction is included;
