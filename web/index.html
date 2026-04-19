@@ -438,9 +438,11 @@
           <div class="full" id="llm-model-row" style="display:none">
             <label for="opt-llm-model">LLM model</label>
             <div style="display:flex;gap:6px;align-items:center">
-              <select id="opt-llm-model" style="flex:1">
+              <select id="opt-llm-model-select" style="flex:1">
                 <option value="">Loading models...</option>
               </select>
+              <input type="text" id="opt-llm-model-text" style="flex:1;display:none" placeholder="e.g. llama3, mistral" />
+              <button id="toggle-input-btn" style="padding:6px 10px;background:var(--border);color:var(--text);border:none;border-radius:5px;cursor:pointer;font-size:0.75rem" title="Toggle between dropdown and text input">⇄</button>
               <button id="refresh-models-btn" style="padding:6px 10px;background:var(--border);color:var(--text);border:none;border-radius:5px;cursor:pointer;font-size:0.75rem" title="Refresh model list">↻</button>
             </div>
             <div id="llm-model-status" style="font-size:0.72rem;color:var(--dim);margin-top:3px"></div>
@@ -549,18 +551,44 @@ function setFile(f) {
    ================================================================ */
 const llmCheck    = document.getElementById('opt-llm');
 const llmModelRow = document.getElementById('llm-model-row');
-const llmModelSelect = document.getElementById('opt-llm-model');
+const llmModelSelect = document.getElementById('opt-llm-model-select');
+const llmModelText = document.getElementById('opt-llm-model-text');
 const llmModelStatus = document.getElementById('llm-model-status');
 const refreshModelsBtn = document.getElementById('refresh-models-btn');
+const toggleInputBtn = document.getElementById('toggle-input-btn');
+
+let useTextInput = false;
 
 llmCheck.addEventListener('change', () => {
   llmModelRow.style.display = llmCheck.checked ? '' : 'none';
-  if (llmCheck.checked) {
+  if (llmCheck.checked && !useTextInput) {
     fetchOllamaModels();
   }
 });
 
 refreshModelsBtn.addEventListener('click', fetchOllamaModels);
+
+toggleInputBtn.addEventListener('click', () => {
+  useTextInput = !useTextInput;
+  if (useTextInput) {
+    // Switch to text input
+    llmModelSelect.style.display = 'none';
+    llmModelText.style.display = '';
+    refreshModelsBtn.style.display = 'none';
+    llmModelStatus.textContent = 'Manual input mode';
+    llmModelStatus.style.color = 'var(--accent2)';
+    // Copy current dropdown value to text input if available
+    if (llmModelSelect.value) {
+      llmModelText.value = llmModelSelect.value;
+    }
+  } else {
+    // Switch to dropdown
+    llmModelSelect.style.display = '';
+    llmModelText.style.display = 'none';
+    refreshModelsBtn.style.display = '';
+    fetchOllamaModels();
+  }
+});
 
 async function fetchOllamaModels() {
   llmModelStatus.textContent = 'Loading...';
@@ -599,7 +627,7 @@ async function fetchOllamaModels() {
 }
 
 // Fetch models on page load if LLM is already checked
-if (llmCheck.checked) {
+if (llmCheck.checked && !useTextInput) {
   fetchOllamaModels();
 }
 
@@ -622,7 +650,7 @@ runBtn.addEventListener('click', async () => {
   fd.append('top_n',         document.getElementById('opt-topn').value);
   fd.append('keywords',      document.getElementById('opt-keywords').value);
   fd.append('llm_enabled',   llmCheck.checked ? 'true' : 'false');
-  fd.append('llm_model',     document.getElementById('opt-llm-model').value);
+  fd.append('llm_model',     useTextInput ? llmModelText.value : llmModelSelect.value);
   fd.append('output_dir',    document.getElementById('opt-outdir').value);
   fd.append('burn_subtitles', document.getElementById('opt-subtitles').checked ? 'true' : 'false');
 
@@ -863,8 +891,14 @@ async function rerunJob(jobId) {
     llmEl.checked = !!opts.llm_enabled;
     llmModelRow.style.display = llmEl.checked ? '' : 'none';
 
-    const llmModelEl = document.getElementById('opt-llm-model');
-    if (opts.llm_model) llmModelEl.value = opts.llm_model;
+    // Set LLM model in the appropriate input (dropdown or text)
+    if (opts.llm_model) {
+      if (useTextInput) {
+        llmModelText.value = opts.llm_model;
+      } else {
+        llmModelSelect.value = opts.llm_model;
+      }
+    }
 
     const outdirEl = document.getElementById('opt-outdir');
     outdirEl.value = opts.output_dir || '';
