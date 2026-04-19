@@ -3,12 +3,179 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
+import requests
+
 from config import Config
+from pipeline.exceptions import LLMScoringError
 from pipeline.models import Clip, ScoredSegment, Transcript
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# LLM boundary refinement
+# ---------------------------------------------------------------------------
+
+_BOUNDARY_CONTEXT_SECONDS = 30.0  # how far before/after the clip to show the LLM
+
+
+def refine_clip_boundaries_with_llm(
+    config: Config,
+    clip: Clip,
+    transcript: Transcript,
+    video_duration: float,
+) -> Clip:
+    """Ask the LLM to pick exact start/end timestamps for a clip.
+
+    Shows the LLM the transcript for the ±30s window around the current clip
+    boundaries and asks it to choose the best start and end time from the
+    available segment timestamps — or to extend in either direction if needed.
+
+    The LLM must respond with:
+        START_TIME: <seconds>
+        END_TIME: <seconds>
+
+    If parsing fails or the result is invalid, the original clip is returned
+    unchanged.
+
+    Args:
+        config: Pipeline configuration (LLM endpoint, model, max_clip_duration).
+        clip: The clip whose boundaries should be refined.
+        transcript: Full transcript for context lookup.
+        video_duration: Total video duration for clamping.
+
+    Returns:
+        A new Clip with refined boundaries, or the original clip on failure.
+    """
+    # Build the context window: ±30s around the current clip
+    context_start = max(0.0, clip.start - _BOUNDARY_CONTEXT_SECONDS)
+    context_end = min(video_duration, clip.end + _BOUNDARY_CONTEXT_SECONDS)
+
+    # Collect all segments that fall within the context window
+    context_segs = [
+        seg for seg in transcript.segments
+        if seg.end > context_start and seg.start < context_end
+    ]
+
+    if not context_segs:
+        return clip
+
+    # Format the transcript block.
+    # Mark segments that are currently inside the clip with [IN CLIP].
+    lines: list[str] = []
+    for seg in context_segs:
+        in_clip = seg.start >= clip.start - 0.5 and seg.end <= clip.end + 0.5
+        marker = " [IN CLIP]" if in_clip else ""
+        lines.append(
+            f"[{seg.start:.1f}s] {seg.text.strip()}{marker}"
+        )
+    transcript_block = "\n".join(lines)
+
+    # List of available start/end timestamps the LLM can choose from
+    available_starts = sorted({f"{seg.start:.1f}" for seg in context_segs})
+    available_ends = sorted({f"{seg.end:.1f}" for seg in context_segs})
+
+    current_duration = clip.end - clip.start
+
+    prompt = (
+        "You are a video editor choosing the exact start and end of a highlight clip.\n\n"
+        "Below is a transcript with timestamps. Lines marked [IN CLIP] are already "
+        "selected. Your job is to choose the best start and end time to make a "
+        f"compelling clip between {config.min_clip_duration:.0f}s and "
+        f"{config.max_clip_duration:.0f}s long.\n\n"
+        "RULES:\n"
+        "- The clip must start at a natural beginning (before a reaction, punchline, "
+        "or setup — not mid-sentence)\n"
+        "- The clip must end at a natural conclusion (after the reaction lands, "
+        "laughter dies down, or the moment resolves — not mid-sentence)\n"
+        "- You may extend the clip earlier or later than the current [IN CLIP] range "
+        "if it makes the clip more complete\n"
+        f"- Minimum duration: {config.min_clip_duration:.0f}s, "
+        f"Maximum: {config.max_clip_duration:.0f}s\n"
+        f"- Current clip: {clip.start:.1f}s → {clip.end:.1f}s "
+        f"({current_duration:.0f}s)\n\n"
+        f"TRANSCRIPT (context window {context_start:.1f}s → {context_end:.1f}s):\n"
+        f"{transcript_block}\n\n"
+        f"Available start times: {', '.join(available_starts)}\n"
+        f"Available end times: {', '.join(available_ends)}\n\n"
+        "Respond in EXACTLY this format (no other text):\n"
+        "START_TIME: <seconds from the available start times above>\n"
+        "END_TIME: <seconds from the available end times above>\n"
+        "REASON: <one sentence explaining why you chose these boundaries>"
+    )
+
+    try:
+        payload = {"model": config.llm_model, "prompt": prompt, "stream": False}
+        response = requests.post(config.llm_endpoint, json=payload, timeout=60)
+        raw = str(response.json().get("response", ""))
+    except (requests.ConnectionError, requests.Timeout, Exception) as exc:
+        logger.warning("LLM boundary refinement failed for clip at %.1fs: %s", clip.start, exc)
+        return clip
+
+    start_match = re.search(r'START_TIME:\s*([\d.]+)', raw)
+    end_match = re.search(r'END_TIME:\s*([\d.]+)', raw)
+    reason_match = re.search(r'REASON:\s*(.+)', raw)
+
+    if not start_match or not end_match:
+        logger.warning(
+            "LLM boundary refinement: could not parse START_TIME/END_TIME for clip "
+            "at %.1fs. Response: %r", clip.start, raw[:300]
+        )
+        return clip
+
+    try:
+        new_start = float(start_match.group(1))
+        new_end = float(end_match.group(1))
+    except ValueError:
+        return clip
+
+    # Snap to the nearest actual segment boundary
+    all_starts = [seg.start for seg in transcript.segments]
+    all_ends = [seg.end for seg in transcript.segments]
+
+    def _snap(value: float, candidates: list[float]) -> float:
+        return min(candidates, key=lambda x: abs(x - value))
+
+    new_start = _snap(new_start, all_starts)
+    new_end = _snap(new_end, all_ends)
+
+    # Validate: must be ordered, within video, within duration limits
+    if new_start >= new_end:
+        logger.warning(
+            "LLM boundary refinement returned invalid range %.1fs → %.1fs; keeping original",
+            new_start, new_end,
+        )
+        return clip
+
+    new_start = max(0.0, new_start)
+    new_end = min(video_duration, new_end)
+    new_duration = new_end - new_start
+
+    if new_duration > config.max_clip_duration:
+        logger.warning(
+            "LLM boundary refinement produced %.0fs clip (max %.0fs); keeping original",
+            new_duration, config.max_clip_duration,
+        )
+        return clip
+
+    reason = reason_match.group(1).strip() if reason_match else ""
+    logger.info(
+        "  Boundary refined: %.1fs→%.1fs (%.0fs) → %.1fs→%.1fs (%.0fs) | %s",
+        clip.start, clip.end, current_duration,
+        new_start, new_end, new_duration,
+        reason,
+    )
+
+    return Clip(
+        start=new_start,
+        end=new_end,
+        score=clip.score,
+        rank=clip.rank,
+        segment_indices=clip.segment_indices,
+    )
 
 
 def select_clips(
@@ -165,12 +332,25 @@ def select_clips(
     # Step 5: Detect and handle overlaps
     clips = _resolve_overlaps(clips, config.max_clip_duration)
 
-    # Step 6: Assign 1-based rank by score (descending)
+    # Step 6: LLM boundary refinement (if LLM enabled)
+    # For each clip, ask the LLM to pick exact start/end timestamps using
+    # the ±30s transcript context around the current clip boundaries.
+    if config.llm_enabled:
+        refined: list[Clip] = []
+        for clip in clips:
+            refined.append(
+                refine_clip_boundaries_with_llm(config, clip, transcript, video_duration)
+            )
+        clips = refined
+        # Re-resolve overlaps in case refinement caused new ones
+        clips = _resolve_overlaps(clips, config.max_clip_duration)
+
+    # Step 7: Assign 1-based rank by score (descending)
     clips_by_score = sorted(clips, key=lambda c: c.score, reverse=True)
     for rank, clip in enumerate(clips_by_score, start=1):
         clip.rank = rank
 
-    # Step 7: Return sorted by rank
+    # Step 8: Return sorted by rank
     result = sorted(clips_by_score, key=lambda c: c.rank)
 
     elapsed = time.time() - t0
