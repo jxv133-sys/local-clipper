@@ -7,8 +7,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     build-essential \
     python3-dev \
-    python3.11-distutils \
-    python3-setuptools \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
