@@ -11,6 +11,7 @@ WORKDIR /app
 
 # Install Python dependencies first (layer caching)
 COPY requirements.txt .
+RUN python3 -m pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
