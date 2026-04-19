@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # LLM boundary refinement
 # ---------------------------------------------------------------------------
 
-_BOUNDARY_CONTEXT_SECONDS = 30.0  # how far before/after the clip to show the LLM
+_BOUNDARY_CONTEXT_SECONDS = 45.0  # how far before/after the clip to show the LLM
 
 
 def refine_clip_boundaries_with_llm(
@@ -28,21 +28,24 @@ def refine_clip_boundaries_with_llm(
     transcript: Transcript,
     video_duration: float,
 ) -> Clip:
-    """Ask the LLM to pick exact start/end timestamps for a clip.
+    """Ask the LLM to pick exact start/end timestamps for a clip using the Setup → Moment → Reaction arc.
 
-    Shows the LLM the transcript for the ±30s window around the current clip
-    boundaries and asks it to choose the best start and end time from the
-    available segment timestamps — or to extend in either direction if needed.
+    Shows the LLM the transcript for the ±45s window around the current clip
+    boundaries and asks it to identify the three-part narrative arc:
+    - Setup: context before the moment (5–10s)
+    - Moment: the peak event (10–30s)
+    - Reaction: the streamer's response (5–10s)
 
     The LLM must respond with:
         START_TIME: <seconds>
         END_TIME: <seconds>
+        REASON: <explanation>
 
     If parsing fails or the result is invalid, the original clip is returned
     unchanged.
 
     Args:
-        config: Pipeline configuration (LLM endpoint, model, max_clip_duration).
+        config: Pipeline configuration (LLM endpoint, model, min/max_clip_duration).
         clip: The clip whose boundaries should be refined.
         transcript: Full transcript for context lookup.
         video_duration: Total video duration for clamping.
@@ -50,7 +53,7 @@ def refine_clip_boundaries_with_llm(
     Returns:
         A new Clip with refined boundaries, or the original clip on failure.
     """
-    # Build the context window: ±30s around the current clip
+    # Build the context window: ±45s around the current clip
     context_start = max(0.0, clip.start - _BOUNDARY_CONTEXT_SECONDS)
     context_end = min(video_duration, clip.end + _BOUNDARY_CONTEXT_SECONDS)
 
@@ -81,22 +84,25 @@ def refine_clip_boundaries_with_llm(
     current_duration = clip.end - clip.start
 
     prompt = (
-        "You are a video editor choosing the exact start and end of a highlight clip.\n\n"
-        "Below is a transcript with timestamps. Lines marked [IN CLIP] are already "
-        "selected. Your job is to choose the best start and end time to make a "
-        f"compelling clip between {config.min_clip_duration:.0f}s and "
-        f"{config.max_clip_duration:.0f}s long.\n\n"
-        "RULES:\n"
-        "- The clip must start at a natural beginning (before a reaction, punchline, "
-        "or setup — not mid-sentence)\n"
-        "- The clip must end at a natural conclusion (after the reaction lands, "
-        "laughter dies down, or the moment resolves — not mid-sentence)\n"
-        "- You may extend the clip earlier or later than the current [IN CLIP] range "
-        "if it makes the clip more complete\n"
-        f"- Minimum duration: {config.min_clip_duration:.0f}s, "
-        f"Maximum: {config.max_clip_duration:.0f}s\n"
-        f"- Current clip: {clip.start:.1f}s → {clip.end:.1f}s "
-        f"({current_duration:.0f}s)\n\n"
+        "You are a video editor creating a YouTube Shorts clip from a gaming stream. "
+        "Your goal is to identify and preserve the Setup → Moment → Reaction narrative arc.\n\n"
+        "Below is a transcript with timestamps. Lines marked [IN CLIP] are currently selected. "
+        "Your job is to identify the three-part arc and set boundaries that capture all three parts:\n\n"
+        "1. SETUP (5–10s before the moment): What's happening in the stream — gives context\n"
+        "2. MOMENT (10–30s): The funny/scary/impressive event — the reason the clip exists\n"
+        "3. REACTION (5–10s after the moment): The streamer's response — what viewers share\n\n"
+        "INSTRUCTIONS:\n"
+        "- Identify where the SETUP begins (context before the moment)\n"
+        "- Identify where the MOMENT peaks (the highlight event)\n"
+        "- Identify where the REACTION ends (after the streamer responds)\n"
+        "- Set START_TIME at the beginning of the setup\n"
+        "- Set END_TIME after the reaction resolves\n"
+        "- If the reaction is missing or cut off, extend END_TIME forward to capture it\n"
+        "- Setup should be 5–10s before the moment. Reaction should be 5–10s after the moment.\n\n"
+        "CONSTRAINTS:\n"
+        f"- The clip MUST be at least {config.min_clip_duration:.0f}s long. Do not shrink below this.\n"
+        f"- The clip MUST NOT exceed {config.max_clip_duration:.0f}s.\n"
+        f"- Current clip: {clip.start:.1f}s → {clip.end:.1f}s ({current_duration:.0f}s)\n\n"
         f"TRANSCRIPT (context window {context_start:.1f}s → {context_end:.1f}s):\n"
         f"{transcript_block}\n\n"
         f"Available start times: {', '.join(available_starts)}\n"
@@ -104,7 +110,7 @@ def refine_clip_boundaries_with_llm(
         "Respond in EXACTLY this format (no other text):\n"
         "START_TIME: <seconds from the available start times above>\n"
         "END_TIME: <seconds from the available end times above>\n"
-        "REASON: <one sentence explaining why you chose these boundaries>"
+        "REASON: <one sentence explaining the arc: where setup/moment/reaction are>"
     )
 
     try:
@@ -252,35 +258,70 @@ def select_clips(
         if seed_idx >= 0:
             included_indices = [seed_idx]
 
-        # Expand outward using adjacent transcript segments.
+        # Expand using adjacent transcript segments with a biased strategy:
+        #
+        # Phase 1 — Forward (reaction tail): expand right from the seed end until
+        #   at least min_reaction_duration seconds of content after the seed end
+        #   are included, or until blocked by a gap > max_expansion_gap, the
+        #   max_clip_duration ceiling, or the end of the transcript.
+        #
+        # Phase 2 — Backward (setup): expand left from the seed start to fill
+        #   the remaining duration budget up to min_clip_duration, subject to
+        #   the same gap and max_duration constraints.
         #
         # Gap handling: max_expansion_gap is a *hard boundary* — we will not
         # cross a gap larger than this value.  When a gap is too large we stop
         # expanding in that direction entirely (the silence represents a scene
         # or topic change we don't want to span).
         if seed_idx >= 0:
-            left_idx = seed_idx - 1
+            seed_end = scored_seg.segment.end  # original seed end (fixed reference)
+
             right_idx = seed_idx + 1
-            left_blocked = False   # True once we hit a gap that is too large
             right_blocked = False
+
+            # --- Phase 1: expand forward to capture the reaction tail ---
+            while True:
+                # How much content after the seed end is already included?
+                reaction_captured = clip_end - seed_end
+                if reaction_captured >= config.min_reaction_duration:
+                    break  # reaction tail satisfied
+
+                can_expand_right = (not right_blocked) and right_idx < len(transcript.segments)
+                if not can_expand_right:
+                    break  # no more content to the right — use whatever we have
+
+                right_seg = transcript.segments[right_idx]
+                right_gap = right_seg.start - clip_end
+                if right_gap > config.max_expansion_gap:
+                    right_blocked = True
+                    break
+                new_end = right_seg.end
+                new_duration = new_end - clip_start
+                if new_duration > config.max_clip_duration:
+                    right_blocked = True
+                    break
+                clip_end = new_end
+                included_indices.append(right_idx)
+                right_idx += 1
+
+            # --- Phase 2: expand backward to fill remaining budget (setup) ---
+            left_idx = seed_idx - 1
+            left_blocked = False
 
             while (clip_end - clip_start) < config.min_clip_duration:
                 can_expand_left = (not left_blocked) and left_idx >= 0
-                can_expand_right = (not right_blocked) and right_idx < len(transcript.segments)
+                can_expand_right_phase2 = (not right_blocked) and right_idx < len(transcript.segments)
 
-                if not can_expand_left and not can_expand_right:
+                if not can_expand_left and not can_expand_right_phase2:
                     break
-
-                left_seg = transcript.segments[left_idx] if can_expand_left else None
-                right_seg = transcript.segments[right_idx] if can_expand_right else None
 
                 expanded = False
 
-                # --- Try left ---
-                if can_expand_left and left_seg is not None:
+                # --- Try left (primary in phase 2) ---
+                if can_expand_left:
+                    left_seg = transcript.segments[left_idx]
                     left_gap = clip_start - left_seg.end
                     if left_gap > config.max_expansion_gap:
-                        # Gap too large — permanently block this direction
                         left_blocked = True
                     else:
                         new_start = left_seg.start
@@ -291,14 +332,13 @@ def select_clips(
                             left_idx -= 1
                             expanded = True
                         else:
-                            # Adding this segment would exceed max duration — block left
                             left_blocked = True
 
-                # --- Try right (only if still short) ---
-                if (clip_end - clip_start) < config.min_clip_duration and can_expand_right and right_seg is not None:
+                # --- Try right as fallback (if left is blocked and still short) ---
+                if (clip_end - clip_start) < config.min_clip_duration and can_expand_right_phase2:
+                    right_seg = transcript.segments[right_idx]
                     right_gap = right_seg.start - clip_end
                     if right_gap > config.max_expansion_gap:
-                        # Gap too large — permanently block this direction
                         right_blocked = True
                     else:
                         new_end = right_seg.end
@@ -309,7 +349,6 @@ def select_clips(
                             right_idx += 1
                             expanded = True
                         else:
-                            # Adding this segment would exceed max duration — block right
                             right_blocked = True
 
                 if not expanded:
@@ -338,19 +377,36 @@ def select_clips(
     if config.llm_enabled:
         refined: list[Clip] = []
         for clip in clips:
-            refined.append(
-                refine_clip_boundaries_with_llm(config, clip, transcript, video_duration)
-            )
+            candidate = refine_clip_boundaries_with_llm(config, clip, transcript, video_duration)
+            new_duration = candidate.end - candidate.start
+            if new_duration < config.min_clip_duration:
+                logger.warning(
+                    "[ClipSelector] LLM boundary refinement produced %.0fs clip "
+                    "(min %.0fs); keeping original",
+                    new_duration,
+                    config.min_clip_duration,
+                )
+                refined.append(clip)
+            else:
+                refined.append(candidate)
         clips = refined
         # Re-resolve overlaps in case refinement caused new ones
         clips = _resolve_overlaps(clips, config.max_clip_duration)
 
-    # Step 7: Assign 1-based rank by score (descending)
+    # Step 7: Greedy spacing pass — ensure clips are spread across the video.
+    # Sort by score descending; accept a clip only if its start time is at least
+    # min_clip_spacing seconds away from every already-accepted clip.
+    # If the strict pass yields fewer than top_n_clips, fill remaining slots from
+    # the rejected candidates in score order (fallback).
+    # This runs AFTER LLM boundary refinement so refined clips respect spacing.
+    clips = _apply_spacing(clips, config.min_clip_spacing, config.top_n_clips)
+
+    # Step 8: Assign 1-based rank by score (descending)
     clips_by_score = sorted(clips, key=lambda c: c.score, reverse=True)
     for rank, clip in enumerate(clips_by_score, start=1):
         clip.rank = rank
 
-    # Step 8: Return sorted by rank
+    # Step 9: Return sorted by rank
     result = sorted(clips_by_score, key=lambda c: c.rank)
 
     elapsed = time.time() - t0
@@ -362,6 +418,60 @@ def select_clips(
         )
 
     return result
+
+
+def _apply_spacing(clips: list[Clip], min_spacing: float, top_n: int) -> list[Clip]:
+    """Greedy spacing pass: ensure no two accepted clips start within min_spacing seconds.
+
+    Algorithm:
+    1. Sort candidates by score descending.
+    2. Accept a clip only if its start time is at least min_spacing seconds away
+       from every already-accepted clip's start time.
+    3. If the strict pass yields fewer than top_n clips, fill remaining slots from
+       the rejected candidates in score order (fallback).
+
+    Args:
+        clips: List of Clip objects (any order).
+        min_spacing: Minimum required gap (seconds) between accepted clip start times.
+        top_n: Desired number of clips; fallback kicks in if strict pass yields fewer.
+
+    Returns:
+        List of Clip objects that satisfy the spacing constraint (or the best
+        available subset when there are not enough spaced candidates).
+    """
+    if not clips or min_spacing <= 0.0:
+        return clips
+
+    # Sort by score descending so higher-scoring clips are accepted first
+    by_score = sorted(clips, key=lambda c: c.score, reverse=True)
+
+    accepted: list[Clip] = []
+    rejected: list[Clip] = []
+
+    for clip in by_score:
+        too_close = any(
+            abs(clip.start - acc.start) < min_spacing
+            for acc in accepted
+        )
+        if too_close:
+            rejected.append(clip)
+            # Find which accepted clip is too close for logging
+            closest = min(accepted, key=lambda acc: abs(clip.start - acc.start))
+            logger.info(
+                "[ClipSelector] Clip at %.1fs removed by spacing pass (too close to clip at %.1fs)",
+                clip.start,
+                closest.start,
+            )
+        else:
+            accepted.append(clip)
+
+    # Fallback: if we don't have enough clips, fill from rejected in score order
+    if len(accepted) < top_n:
+        needed = top_n - len(accepted)
+        # rejected is already in score-descending order (same sort as by_score)
+        accepted.extend(rejected[:needed])
+
+    return accepted
 
 
 def _resolve_overlaps(clips: list[Clip], max_clip_duration: float) -> list[Clip]:

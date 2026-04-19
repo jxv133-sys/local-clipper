@@ -777,3 +777,115 @@ class TestPrefilterWeightDecoupling:
         assert candidates_b[0][0] == 0, (
             "With text-heavy prefilter, seg0 (high text) should rank first"
         )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — LLM audio gate (Task 46)
+# ---------------------------------------------------------------------------
+
+class TestLLMAudioGate:
+    """Tests for the llm_audio_gate soft cap in combine_scores."""
+
+    def _make_config(
+        self,
+        llm_audio_gate: bool = True,
+        text_weight: float = 0.3,
+        audio_weight: float = 0.4,
+        llm_weight: float = 0.3,
+    ) -> Config:
+        from pipeline.scorer import combine_scores  # noqa: F401 — ensure import works
+        cfg = Config(work_dir="/tmp/test")
+        cfg.text_weight = text_weight
+        cfg.audio_weight = audio_weight
+        cfg.llm_weight = llm_weight
+        cfg.llm_audio_gate = llm_audio_gate
+        cfg.spike_weight = 0.0
+        cfg.burst_weight = 0.0
+        return cfg
+
+    def test_high_llm_low_audio_gated(self) -> None:
+        """A 9/10 LLM score (0.9) with audio_score=0.1 should produce a lower
+        clip_score than a 7/10 LLM score (0.7) with audio_score=0.8 when the
+        gate is enabled.
+        """
+        from pipeline.scorer import combine_scores
+
+        cfg = self._make_config(llm_audio_gate=True)
+
+        # High LLM, low audio — gate should suppress the LLM contribution
+        score_quiet = combine_scores(cfg, text=0.5, audio=0.1, llm=0.9)
+
+        # Moderate LLM, high audio — gate has no effect (audio >= 0.3)
+        score_loud = combine_scores(cfg, text=0.5, audio=0.8, llm=0.7)
+
+        assert score_quiet < score_loud, (
+            f"Expected gated quiet score ({score_quiet:.4f}) < loud score ({score_loud:.4f})"
+        )
+
+    def test_gate_disabled_uses_full_llm_score(self) -> None:
+        """When llm_audio_gate=False, the LLM score is used at full weight
+        regardless of audio_score.
+        """
+        from pipeline.scorer import combine_scores
+
+        cfg_gated = self._make_config(llm_audio_gate=True)
+        cfg_ungated = self._make_config(llm_audio_gate=False)
+
+        # Low audio — gate would suppress LLM if enabled
+        score_gated = combine_scores(cfg_gated, text=0.5, audio=0.1, llm=0.9)
+        score_ungated = combine_scores(cfg_ungated, text=0.5, audio=0.1, llm=0.9)
+
+        # Ungated should be higher because LLM is used at full weight
+        assert score_ungated > score_gated, (
+            f"Ungated score ({score_ungated:.4f}) should be > gated score ({score_gated:.4f})"
+        )
+
+        # Verify ungated uses the raw formula: text*t + audio*a + llm*l
+        expected_ungated = (
+            cfg_ungated.text_weight * 0.5
+            + cfg_ungated.audio_weight * 0.1
+            + cfg_ungated.llm_weight * 0.9
+        )
+        assert abs(score_ungated - expected_ungated) < 1e-9, (
+            f"Ungated score {score_ungated:.6f} != expected {expected_ungated:.6f}"
+        )
+
+    def test_audio_above_threshold_uses_full_llm(self) -> None:
+        """When audio_score >= 0.3, the LLM score is not reduced by the gate."""
+        from pipeline.scorer import combine_scores
+
+        cfg_gated = self._make_config(llm_audio_gate=True)
+        cfg_ungated = self._make_config(llm_audio_gate=False)
+
+        # audio_score = 0.3 exactly — gate factor = min(1.0, 0.3/0.3) = 1.0
+        score_gated_at_threshold = combine_scores(cfg_gated, text=0.5, audio=0.3, llm=0.8)
+        score_ungated_at_threshold = combine_scores(cfg_ungated, text=0.5, audio=0.3, llm=0.8)
+
+        assert abs(score_gated_at_threshold - score_ungated_at_threshold) < 1e-9, (
+            f"At audio=0.3, gated ({score_gated_at_threshold:.6f}) should equal "
+            f"ungated ({score_ungated_at_threshold:.6f})"
+        )
+
+        # audio_score = 0.8 — well above threshold, gate factor = 1.0
+        score_gated_above = combine_scores(cfg_gated, text=0.5, audio=0.8, llm=0.8)
+        score_ungated_above = combine_scores(cfg_ungated, text=0.5, audio=0.8, llm=0.8)
+
+        assert abs(score_gated_above - score_ungated_above) < 1e-9, (
+            f"At audio=0.8, gated ({score_gated_above:.6f}) should equal "
+            f"ungated ({score_ungated_above:.6f})"
+        )
+
+    def test_audio_at_zero_zeroes_llm(self) -> None:
+        """When audio_score=0.0, effective_llm=0.0 (gate fully suppresses LLM)."""
+        from pipeline.scorer import combine_scores
+
+        cfg = self._make_config(llm_audio_gate=True)
+
+        score = combine_scores(cfg, text=0.5, audio=0.0, llm=0.9)
+
+        # With audio=0, gate factor = min(1.0, 0.0/0.3) = 0.0 → effective_llm = 0.0
+        expected = cfg.text_weight * 0.5 + cfg.audio_weight * 0.0 + cfg.llm_weight * 0.0
+        assert abs(score - expected) < 1e-9, (
+            f"At audio=0.0, score {score:.6f} should equal {expected:.6f} "
+            f"(LLM fully suppressed by gate)"
+        )

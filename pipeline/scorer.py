@@ -76,7 +76,23 @@ def compute_text_score(config: Config, segment: Segment) -> float:
 
     if raw_score <= 0.0:
         return 0.0
-    return max(0.0, min(1.0, raw_score / (raw_score + 5.0)))
+    normalized = max(0.0, min(1.0, raw_score / (raw_score + 5.0)))
+
+    # Repetition penalty: detect Whisper hallucinations and genuinely repetitive content.
+    # Single-word segments cannot be repetitive, so skip them.
+    words = text.lower().split()
+    total_words = len(words)
+    if total_words > 1:
+        unique_words = len(set(words))
+        repetition_ratio = unique_words / total_words
+        if repetition_ratio < config.repetition_penalty_threshold:
+            logger.debug(
+                "[Scorer] Repetition penalty applied at %.1fs (ratio=%.2f)",
+                segment.start, repetition_ratio,
+            )
+            normalized *= config.repetition_penalty_multiplier
+
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +295,23 @@ def combine_scores(
     spike: float = 0.0,
     burst: float = 0.0,
 ) -> float:
-    """Weighted sum of text, audio, spike, burst, and optional LLM scores. Always >= 0."""
-    llm_value = llm if llm is not None else 0.0
+    """Weighted sum of text, audio, spike, burst, and optional LLM scores. Always >= 0.
+
+    When config.llm_audio_gate is True and llm is not None, the LLM score
+    contribution is soft-capped based on audio energy:
+        effective_llm = llm * min(1.0, audio / 0.3)
+    This prevents a high LLM score on a quiet moment from overriding strong
+    audio signals.  At audio_score >= 0.3 the LLM score is used at full weight.
+    """
+    if llm is not None and config.llm_audio_gate:
+        effective_llm = llm * min(1.0, audio / 0.3)
+    else:
+        effective_llm = llm if llm is not None else 0.0
+
     return max(0.0,
                config.text_weight * text
                + config.audio_weight * audio
-               + config.llm_weight * llm_value
+               + config.llm_weight * effective_llm
                + config.spike_weight * spike
                + config.burst_weight * burst)
 
@@ -342,19 +369,19 @@ def _build_candidate_windows(
     Strategy:
     1. **Text+audio track**: rank by ``text_weight * text_score + audio_weight *
        audio_score`` and pick the top
-       ``llm_max_candidates - llm_audio_candidates`` seeds (spaced at least
+       ``llm_max_candidates * (1 - llm_audio_spike_percentage)`` seeds (spaced at least
        ``min_clip_duration`` apart).
     2. **Audio spike track**: rank by ``spike_score`` alone and pick the top
-       ``llm_audio_candidates`` seeds (same spacing constraint, applied
+       ``llm_max_candidates * llm_audio_spike_percentage`` seeds (same spacing constraint, applied
        independently of the text+audio track).
     3. Merge both shortlists and deduplicate: if two candidates have midpoints
        within ``min_clip_duration`` of each other, keep the one with the higher
        ``pre_score`` (text+audio combined score).
 
-    This guarantees that high-energy silent moments always reach LLM scoring
+    This guarantees that high-energy silent moments (sudden loud sounds) always reach LLM scoring
     even when their text score is low.
 
-    When ``llm_audio_candidates`` is 0 (or ``spike_scores`` is not provided),
+    When ``llm_audio_spike_percentage`` is 0.0 (or ``spike_scores`` is not provided),
     the function falls back to the original single-track behaviour.
 
     Returns:
@@ -392,7 +419,10 @@ def _build_candidate_windows(
             already_used.append(seg_mid)
         return picked
 
-    audio_budget = config.llm_audio_candidates if spike_scores else 0
+    # Calculate audio spike budget as a percentage of total candidates
+    # Example: with llm_max_candidates=20 and llm_audio_spike_percentage=0.2,
+    # audio_budget = int(20 * 0.2) = 4 slots for audio spikes
+    audio_budget = int(config.llm_max_candidates * config.llm_audio_spike_percentage) if spike_scores else 0
     text_budget = config.llm_max_candidates - audio_budget
 
     # --- Track 1: text+audio ---

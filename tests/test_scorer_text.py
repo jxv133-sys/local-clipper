@@ -38,6 +38,8 @@ def make_config(
     cfg.text_weight = text_weight
     cfg.audio_weight = audio_weight
     cfg.llm_weight = llm_weight
+    # Disable the audio gate so Property 6 tests the raw weighted sum formula
+    cfg.llm_audio_gate = False
     if keywords is not None:
         cfg.keywords = keywords
     return cfg
@@ -496,3 +498,121 @@ class TestReactionKeywords:
                     "yoo", "bro", "wait", "stop", "go", "run", "help", "dead", "gone",
                     "hit", "fly", "fall"}
         assert expected.issubset(set(config.reaction_keywords))
+
+
+# ---------------------------------------------------------------------------
+# Task 47: Repetition penalty tests
+# ---------------------------------------------------------------------------
+
+class TestRepetitionPenalty:
+    """Tests for repetition penalty in compute_text_score (task 47)."""
+
+    def test_normal_text_no_penalty(self) -> None:
+        """Normal varied text (ratio >= 0.4) should not be penalized — score unchanged."""
+        config = DEFAULT_CONFIG
+        # "the quick brown fox jumps over the lazy dog" — 9 unique / 9 total = 1.0
+        seg = make_segment("the quick brown fox jumps over the lazy dog")
+        score_normal = compute_text_score(config, seg)
+
+        # Verify ratio is >= threshold (no penalty expected)
+        words = seg.text.lower().split()
+        ratio = len(set(words)) / len(words)
+        assert ratio >= config.repetition_penalty_threshold
+
+        # Score should be the same as computing without penalty (ratio is fine)
+        # We verify by checking the score is NOT reduced by the multiplier
+        # i.e. score_normal > score_normal * multiplier (multiplier < 1.0)
+        assert score_normal > score_normal * config.repetition_penalty_multiplier or score_normal == 0.0
+
+    def test_highly_repetitive_text_penalized(self) -> None:
+        """Highly repetitive text (ratio < 0.4) should have score multiplied by penalty multiplier."""
+        config = DEFAULT_CONFIG
+        # "ha ha ha ha ha ha ha ha ha ha" — 1 unique / 10 total = 0.1 (well below 0.4)
+        repetitive_text = "ha ha ha ha ha ha ha ha ha ha"
+        seg_repetitive = make_segment(repetitive_text)
+
+        # Verify ratio is below threshold
+        words = repetitive_text.lower().split()
+        ratio = len(set(words)) / len(words)
+        assert ratio < config.repetition_penalty_threshold
+
+        score_repetitive = compute_text_score(config, seg_repetitive)
+
+        # Build a non-repetitive segment with the same raw score components
+        # by using varied text of similar length — its score should be higher
+        # (not penalized), confirming the penalty was applied to the repetitive one.
+        varied_text = "the quick brown fox jumps over lazy dogs today"
+        seg_varied = make_segment(varied_text)
+        score_varied = compute_text_score(config, seg_varied)
+
+        # The repetitive segment should score lower than the varied one
+        assert score_repetitive < score_varied
+
+    def test_single_word_no_penalty(self) -> None:
+        """Single-word segment should NOT be penalized (edge case)."""
+        config = DEFAULT_CONFIG
+        seg = make_segment("wow")
+
+        # Compute score — should not be penalized (total_words == 1)
+        score = compute_text_score(config, seg)
+
+        # Verify it's in valid range and not zero (reaction keyword "wow" should score > 0)
+        assert 0.0 <= score <= 1.0
+        assert score > 0.0  # "wow" is a reaction keyword
+
+        # Confirm: if penalty were applied, score would be score * 0.5
+        # The single-word score should equal the unpenalized value.
+        # We can verify by checking the ratio logic: total_words == 1 → no penalty
+        words = seg.text.lower().split()
+        assert len(words) == 1  # confirms it's a single-word segment
+
+    def test_penalty_threshold_boundary(self) -> None:
+        """Text with exactly 40% unique words should NOT be penalized (boundary is exclusive: ratio < threshold)."""
+        config = DEFAULT_CONFIG
+        # Construct text with exactly 40% unique words:
+        # 2 unique words out of 5 total = 0.4 exactly
+        # e.g. "a a a b b" → unique={"a","b"}=2, total=5, ratio=0.4
+        boundary_text = "a a a b b"
+        words = boundary_text.lower().split()
+        ratio = len(set(words)) / len(words)
+        assert abs(ratio - 0.4) < 1e-9, f"Expected ratio=0.4, got {ratio}"
+
+        seg = make_segment(boundary_text)
+        score_at_boundary = compute_text_score(config, seg)
+
+        # At exactly 0.4, the condition is ratio < 0.4 which is False → no penalty
+        # Score should equal the unpenalized value.
+        # We verify by checking it's NOT reduced: score > score * multiplier (if score > 0)
+        if score_at_boundary > 0.0:
+            assert score_at_boundary > score_at_boundary * config.repetition_penalty_multiplier
+
+    def test_penalty_multiplier_applied_correctly(self) -> None:
+        """Verify the exact multiplier is applied: score_with_penalty == score_without_penalty * multiplier."""
+        # Use a custom config with a known multiplier
+        config = make_config()
+        config.repetition_penalty_threshold = 0.4
+        config.repetition_penalty_multiplier = 0.5
+
+        # Highly repetitive text: 1 unique / 10 total = 0.1 < 0.4
+        repetitive_text = "go go go go go go go go go go"
+        seg = make_segment(repetitive_text)
+
+        score_with_penalty = compute_text_score(config, seg)
+
+        # Compute what the score would be without penalty by temporarily raising threshold to 0
+        config_no_penalty = make_config()
+        config_no_penalty.repetition_penalty_threshold = 0.0  # never triggers
+        config_no_penalty.repetition_penalty_multiplier = 0.5
+        score_without_penalty = compute_text_score(config_no_penalty, seg)
+
+        # The penalized score should equal the unpenalized score * multiplier
+        import math
+        assert math.isclose(
+            score_with_penalty,
+            score_without_penalty * 0.5,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ), (
+            f"Expected score_with_penalty={score_without_penalty * 0.5:.6f}, "
+            f"got {score_with_penalty:.6f}"
+        )

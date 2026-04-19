@@ -150,21 +150,11 @@ def generate_report(
     lines.append("")
     lines.append("TRANSCRIPT")
     lines.append("-" * 60)
-    if clip_text:
-        # Word-wrap at ~56 chars
-        words = clip_text.split()
-        line_buf: list[str] = []
-        char_count = 0
-        for word in words:
-            if char_count + len(word) + 1 > 56 and line_buf:
-                lines.append("  " + " ".join(line_buf))
-                line_buf = [word]
-                char_count = len(word)
-            else:
-                line_buf.append(word)
-                char_count += len(word) + 1
-        if line_buf:
-            lines.append("  " + " ".join(line_buf))
+    if clip_text_segments:
+        for seg in clip_text_segments:
+            start_fmt = _format_time(seg.start)
+            end_fmt = _format_time(seg.end)
+            lines.append(f"  [{start_fmt} → {end_fmt}] {seg.text.strip()}")
     else:
         lines.append("  (no speech detected in this clip)")
 

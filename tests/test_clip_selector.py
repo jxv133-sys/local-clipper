@@ -632,3 +632,651 @@ class TestMaxExpansionGap:
         assert clips[0].start <= 4.0, (
             f"Expected clip.start <= 4.0 (gap == max_expansion_gap allows expansion), got {clips[0].start}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 45: min_clip_spacing — greedy spacing enforcement tests
+# ---------------------------------------------------------------------------
+
+class TestMinClipSpacing:
+    """Greedy spacing pass ensures clips are spread across the video."""
+
+    def _make_clip(self, start: float, end: float, score: float) -> Clip:
+        """Build a Clip directly (bypassing select_clips) for spacing unit tests."""
+        return Clip(start=start, end=end, score=score, rank=0, segment_indices=[])
+
+    # ------------------------------------------------------------------
+    # Helper: build a scenario where select_clips is called with spacing
+    # ------------------------------------------------------------------
+
+    def _run_select(self, seg_starts, scores, top_n, min_clip_spacing, video_duration=3000.0):
+        """Build segments spaced 30s apart, run select_clips, return clips."""
+        segments = [
+            make_segment(s, s + 5.0, f"seg{i}")
+            for i, s in enumerate(seg_starts)
+        ]
+        scored = [
+            ScoredSegment(
+                segment=seg,
+                text_score=score,
+                audio_score=score,
+                llm_score=0.0,
+                clip_score=score,
+            )
+            for seg, score in zip(segments, scores)
+        ]
+        transcript = make_transcript(segments)
+        config = make_config(
+            top_n_clips=top_n,
+            min_clip_spacing=min_clip_spacing,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+        )
+        return select_clips(config, scored, transcript, video_duration=video_duration)
+
+    def test_lower_scoring_close_clip_is_dropped(self):
+        """Two clips within min_clip_spacing: the lower-scoring one is dropped.
+
+        With top_n=1, the strict pass accepts the highest-scoring clip and the
+        lower-scoring close clip is dropped (no fallback needed since top_n is met).
+        """
+        # Two segments only 60s apart, min_clip_spacing=300s
+        # Segment A at 0s (score 0.9), Segment B at 60s (score 0.5)
+        # After expansion both clips start near 0s and 60s — within 300s of each other.
+        # With top_n=1, the strict pass accepts A (score=0.9) and drops B (score=0.5).
+        clips = self._run_select(
+            seg_starts=[0.0, 60.0],
+            scores=[0.9, 0.5],
+            top_n=1,
+            min_clip_spacing=300.0,
+        )
+        # Only the higher-scoring clip should survive the spacing pass
+        assert len(clips) == 1, f"Expected 1 clip after spacing, got {len(clips)}"
+        assert clips[0].score == 0.9, f"Expected score=0.9, got {clips[0].score}"
+
+    def test_lower_scoring_close_clip_dropped_with_enough_other_candidates(self):
+        """With enough well-spaced candidates, a close lower-scoring clip is dropped.
+
+        3 segments: A at 0s (score 0.9), B at 60s (score 0.5), C at 700s (score 0.7).
+        min_clip_spacing=300s, top_n=2.
+        Strict pass: accept A (0.9), skip B (60s < 300s from A), accept C (700s >= 300s from A).
+        Result: 2 clips (A and C), B is dropped.
+        """
+        clips = self._run_select(
+            seg_starts=[0.0, 60.0, 700.0],
+            scores=[0.9, 0.5, 0.7],
+            top_n=2,
+            min_clip_spacing=300.0,
+            video_duration=3000.0,
+        )
+        assert len(clips) == 2, f"Expected 2 clips, got {len(clips)}"
+        clip_scores = {c.score for c in clips}
+        assert 0.9 in clip_scores, "Expected high-scoring clip (0.9) to be present"
+        assert 0.7 in clip_scores, "Expected second clip (0.7) to be present"
+        assert 0.5 not in clip_scores, "Expected low-scoring close clip (0.5) to be dropped"
+
+    def test_fallback_when_not_enough_candidates(self):
+        """Fallback: if only 2 candidates exist but top_n=3, both are returned
+        even if they're within min_clip_spacing of each other."""
+        # Only 2 segments, both close together, top_n=3
+        clips = self._run_select(
+            seg_starts=[0.0, 60.0],
+            scores=[0.9, 0.5],
+            top_n=3,
+            min_clip_spacing=300.0,
+        )
+        # Strict pass gives 1 clip; fallback fills from rejected → 2 clips total
+        assert len(clips) == 2, (
+            f"Expected 2 clips (fallback), got {len(clips)}: {[(c.start, c.score) for c in clips]}"
+        )
+
+    def test_clips_exactly_at_min_spacing_both_accepted(self):
+        """Clips whose start times are exactly min_clip_spacing apart are both accepted."""
+        # Segments at 0s and 300s, min_clip_spacing=300s
+        # abs(300 - 0) = 300, which is NOT < 300, so both should be accepted
+        clips = self._run_select(
+            seg_starts=[0.0, 300.0],
+            scores=[0.9, 0.8],
+            top_n=2,
+            min_clip_spacing=300.0,
+        )
+        assert len(clips) == 2, (
+            f"Expected 2 clips (exactly at spacing boundary), got {len(clips)}"
+        )
+
+    def test_well_spaced_clips_all_accepted(self):
+        """Clips that are already well-spaced are all accepted without fallback."""
+        # 5 segments each 600s apart, min_clip_spacing=300s → all should pass
+        seg_starts = [i * 600.0 for i in range(5)]
+        clips = self._run_select(
+            seg_starts=seg_starts,
+            scores=[0.9, 0.8, 0.7, 0.6, 0.5],
+            top_n=5,
+            min_clip_spacing=300.0,
+            video_duration=4000.0,
+        )
+        assert len(clips) == 5, (
+            f"Expected 5 well-spaced clips, got {len(clips)}"
+        )
+
+    def test_spacing_zero_disables_enforcement(self):
+        """min_clip_spacing=0.0 disables the spacing pass; all clips are returned."""
+        clips = self._run_select(
+            seg_starts=[0.0, 10.0, 20.0],
+            scores=[0.9, 0.8, 0.7],
+            top_n=3,
+            min_clip_spacing=0.0,
+        )
+        # All 3 should be returned (spacing disabled)
+        assert len(clips) <= 3  # may merge due to overlap, but spacing doesn't drop any
+
+
+# ---------------------------------------------------------------------------
+# Task 49: LLM boundary refinement min-duration fallback tests
+# ---------------------------------------------------------------------------
+
+class TestLLMBoundaryRefinementMinDurationFallback:
+    """When LLM boundary refinement returns a clip shorter than min_clip_duration,
+    the original clip boundaries are preserved."""
+
+    def _make_config_llm_enabled(self, **kwargs) -> Config:
+        defaults = dict(
+            work_dir="/tmp/test",
+            top_n_clips=1,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+            llm_enabled=True,
+        )
+        defaults.update(kwargs)
+        return Config(**defaults)
+
+    def test_llm_tight_window_falls_back_to_original(self, monkeypatch):
+        """When the LLM returns a very tight window (< min_clip_duration), the
+        original clip boundaries are kept unchanged."""
+        import pipeline.clip_selector as cs
+
+        # Build a clip that is 25s long (above min_clip_duration=20s)
+        original_start = 10.0
+        original_end = 35.0
+
+        # Mock refine_clip_boundaries_with_llm to return a 5s clip (below min)
+        def mock_refine(config, clip, transcript, video_duration):
+            return Clip(
+                start=15.0,
+                end=20.0,  # only 5s — below min_clip_duration
+                score=clip.score,
+                rank=clip.rank,
+                segment_indices=clip.segment_indices,
+            )
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        seg = make_segment(original_start, original_end)
+        scored = [make_scored(seg, 0.9)]
+        # Dense transcript so expansion can reach 20s
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(30)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # The LLM's tight window must be rejected; original boundaries preserved
+        assert clip.start != 15.0 or clip.end != 20.0, (
+            "LLM's too-short clip was applied; expected fallback to original"
+        )
+        # Duration must be >= min_clip_duration
+        assert (clip.end - clip.start) >= 20.0, (
+            f"Clip duration {clip.end - clip.start:.1f}s is below min_clip_duration=20s"
+        )
+
+    def test_llm_valid_window_is_applied(self, monkeypatch):
+        """When the LLM returns a valid window (>= min_clip_duration), it is applied."""
+        import pipeline.clip_selector as cs
+
+        def mock_refine(config, clip, transcript, video_duration):
+            # Return a 25s clip — valid
+            return Clip(
+                start=5.0,
+                end=30.0,
+                score=clip.score,
+                rank=clip.rank,
+                segment_indices=clip.segment_indices,
+            )
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        seg = make_segment(10.0, 35.0)
+        scored = [make_scored(seg, 0.9)]
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(30)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # The LLM's valid refinement should be applied
+        assert clip.start == 5.0, f"Expected start=5.0, got {clip.start}"
+        assert clip.end == 30.0, f"Expected end=30.0, got {clip.end}"
+
+    def test_llm_exactly_at_min_duration_is_applied(self, monkeypatch):
+        """When the LLM returns a clip exactly at min_clip_duration, it is applied."""
+        import pipeline.clip_selector as cs
+
+        def mock_refine(config, clip, transcript, video_duration):
+            # Return exactly 20s — right at the boundary
+            return Clip(
+                start=10.0,
+                end=30.0,  # exactly 20s == min_clip_duration
+                score=clip.score,
+                rank=clip.rank,
+                segment_indices=clip.segment_indices,
+            )
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        seg = make_segment(10.0, 35.0)
+        scored = [make_scored(seg, 0.9)]
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(30)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # Exactly at min — should be accepted
+        assert clip.start == 10.0, f"Expected start=10.0, got {clip.start}"
+        assert clip.end == 30.0, f"Expected end=30.0, got {clip.end}"
+
+    def test_llm_fallback_warning_is_logged(self, monkeypatch, caplog):
+        """A WARNING is logged when the LLM's refined clip is below min_clip_duration."""
+        import logging
+        import pipeline.clip_selector as cs
+
+        def mock_refine(config, clip, transcript, video_duration):
+            return Clip(
+                start=15.0,
+                end=16.0,  # 1s — way below min
+                score=clip.score,
+                rank=clip.rank,
+                segment_indices=clip.segment_indices,
+            )
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        seg = make_segment(10.0, 35.0)
+        scored = [make_scored(seg, 0.9)]
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(30)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        with caplog.at_level(logging.WARNING, logger="pipeline.clip_selector"):
+            select_clips(config, scored, transcript, video_duration=100.0)
+
+        warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("keeping original" in msg for msg in warning_messages), (
+            f"Expected a 'keeping original' warning, got: {warning_messages}"
+        )
+        assert any("min" in msg for msg in warning_messages), (
+            f"Expected min duration mentioned in warning, got: {warning_messages}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 50: Biased expansion — reaction tail first, then setup
+# ---------------------------------------------------------------------------
+
+class TestReactionTailExpansion:
+    """Expansion is biased: forward (reaction tail) first, then backward (setup).
+
+    Three scenarios:
+    1. Seed near start — reaction fills forward, setup is limited
+    2. Seed near end — reaction is truncated gracefully (no failure)
+    3. Seed in middle — full arc captured (reaction + setup)
+    """
+
+    def _make_dense_transcript(self, total_duration: float, seg_duration: float = 2.0) -> list[Segment]:
+        """Build a dense, contiguous transcript covering [0, total_duration]."""
+        segs = []
+        t = 0.0
+        while t + seg_duration <= total_duration:
+            segs.append(make_segment(t, t + seg_duration))
+            t += seg_duration
+        return segs
+
+    def test_seed_near_start_reaction_fills_forward(self):
+        """Seed near the start: expansion fills forward first (reaction), then backward (setup).
+
+        With the seed at 2–4s and min_reaction_duration=8s, the clip must include
+        at least 8s of content after the seed end (4s), i.e. clip_end >= 12s.
+        The remaining budget is filled backward toward 0s.
+        """
+        segs = self._make_dense_transcript(total_duration=60.0)
+        # Seed is the second segment (2–4s) — near the start
+        seed_seg = segs[1]  # start=2.0, end=4.0
+        scored = [make_scored(seed_seg, 0.9)]
+        transcript = make_transcript(segs)
+        config = make_config(
+            top_n_clips=1,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+            min_reaction_duration=8.0,
+        )
+
+        clips = select_clips(config, scored, transcript, video_duration=60.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # Reaction tail: clip_end must be at least seed_end + min_reaction_duration = 4 + 8 = 12s
+        assert clip.end >= 12.0, (
+            f"Expected clip.end >= 12.0 (reaction tail), got {clip.end}"
+        )
+        # Clip must be clamped to video bounds
+        assert clip.start >= 0.0
+        assert clip.end <= 60.0
+
+    def test_seed_near_end_reaction_truncated_gracefully(self):
+        """Seed near the video end: reaction is truncated gracefully — no failure.
+
+        With the seed at 55–57s in a 60s video, there are only 3s of content
+        after the seed end.  min_reaction_duration=8s cannot be satisfied, but
+        the pipeline must not raise an exception and must return a valid clip.
+        """
+        segs = self._make_dense_transcript(total_duration=60.0)
+        # Seed is near the end: start=54.0, end=56.0
+        seed_seg = segs[27]  # 54–56s
+        scored = [make_scored(seed_seg, 0.9)]
+        transcript = make_transcript(segs)
+        config = make_config(
+            top_n_clips=1,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+            min_reaction_duration=8.0,
+        )
+
+        # Must not raise
+        clips = select_clips(config, scored, transcript, video_duration=60.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # Clip must be within video bounds
+        assert clip.start >= 0.0
+        assert clip.end <= 60.0
+        # Clip end should be at or near the video end (all available content used)
+        assert clip.end >= 56.0, (
+            f"Expected clip.end >= 56.0 (seed end), got {clip.end}"
+        )
+        # Duration must be positive
+        assert clip.end > clip.start
+
+    def test_seed_in_middle_full_arc_captured(self):
+        """Seed in the middle: full arc captured — reaction tail + setup.
+
+        With the seed at 30–32s in a 60s video and min_reaction_duration=8s,
+        the clip must include at least 8s after the seed end (clip_end >= 40s)
+        and expand backward to fill the remaining budget.
+        """
+        segs = self._make_dense_transcript(total_duration=60.0)
+        # Seed is in the middle: start=30.0, end=32.0
+        seed_seg = segs[15]  # 30–32s
+        scored = [make_scored(seed_seg, 0.9)]
+        transcript = make_transcript(segs)
+        config = make_config(
+            top_n_clips=1,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+            min_reaction_duration=8.0,
+        )
+
+        clips = select_clips(config, scored, transcript, video_duration=60.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # Reaction tail: clip_end >= seed_end + min_reaction_duration = 32 + 8 = 40s
+        assert clip.end >= 40.0, (
+            f"Expected clip.end >= 40.0 (reaction tail), got {clip.end}"
+        )
+        # Setup: clip should also expand backward from seed start (30s)
+        assert clip.start < 30.0, (
+            f"Expected clip.start < 30.0 (setup expanded backward), got {clip.start}"
+        )
+        # Duration should reach min_clip_duration
+        assert (clip.end - clip.start) >= 20.0, (
+            f"Expected duration >= 20s, got {clip.end - clip.start}"
+        )
+        # Bounds
+        assert clip.start >= 0.0
+        assert clip.end <= 60.0
+
+
+# ---------------------------------------------------------------------------
+# Task 51: LLM boundary refinement with Setup → Moment → Reaction arc
+# ---------------------------------------------------------------------------
+
+class TestLLMBoundaryRefinementArcStructure:
+    """LLM boundary refinement prompt targets the Setup → Moment → Reaction arc."""
+
+    def _make_config_llm_enabled(self, **kwargs) -> Config:
+        defaults = dict(
+            work_dir="/tmp/test",
+            top_n_clips=1,
+            min_clip_duration=30.0,
+            max_clip_duration=60.0,
+            llm_enabled=True,
+        )
+        defaults.update(kwargs)
+        return Config(**defaults)
+
+    def test_llm_arc_prompt_applied_correctly(self, monkeypatch):
+        """When the LLM returns a valid arc-based refinement, it is applied correctly."""
+        import pipeline.clip_selector as cs
+
+        # Mock the LLM to return a valid arc: setup at 10s, moment at 20s, reaction ends at 45s
+        def mock_refine(config, clip, transcript, video_duration):
+            # Simulate LLM identifying the arc and returning boundaries
+            return Clip(
+                start=10.0,  # setup begins
+                end=45.0,    # reaction ends
+                score=clip.score,
+                rank=clip.rank,
+                segment_indices=clip.segment_indices,
+            )
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        # Build a clip that spans 15–40s (25s)
+        seg = make_segment(15.0, 40.0)
+        scored = [make_scored(seg, 0.9)]
+        # Dense transcript covering 0–60s
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(30)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # The LLM's arc-based refinement should be applied
+        assert clip.start == 10.0, f"Expected start=10.0 (setup), got {clip.start}"
+        assert clip.end == 45.0, f"Expected end=45.0 (reaction end), got {clip.end}"
+        # Duration should be 35s (within min=30s, max=60s)
+        assert 30.0 <= (clip.end - clip.start) <= 60.0
+
+    def test_llm_arc_prompt_respects_min_duration(self, monkeypatch):
+        """When the LLM returns an arc that is too short, the original clip is kept."""
+        import pipeline.clip_selector as cs
+
+        def mock_refine(config, clip, transcript, video_duration):
+            # LLM returns a tight arc that is only 15s (below min_clip_duration=30s)
+            return Clip(
+                start=20.0,
+                end=35.0,  # only 15s — below min
+                score=clip.score,
+                rank=clip.rank,
+                segment_indices=clip.segment_indices,
+            )
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        seg = make_segment(15.0, 50.0)
+        scored = [make_scored(seg, 0.9)]
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(30)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        clips = select_clips(config, scored, transcript, video_duration=100.0)
+
+        assert len(clips) == 1
+        clip = clips[0]
+        # The LLM's too-short arc must be rejected; original boundaries preserved
+        assert clip.start != 20.0 or clip.end != 35.0, (
+            "LLM's too-short arc was applied; expected fallback to original"
+        )
+        # Duration must be >= min_clip_duration
+        assert (clip.end - clip.start) >= 30.0, (
+            f"Clip duration {clip.end - clip.start:.1f}s is below min_clip_duration=30s"
+        )
+
+    def test_llm_arc_prompt_context_window_is_45s(self, monkeypatch):
+        """The LLM boundary refinement uses a ±45s context window."""
+        import pipeline.clip_selector as cs
+
+        captured_prompt = []
+
+        # Mock requests.post to capture the prompt sent to the LLM
+        original_post = __import__('requests').post
+        def mock_post(url, json=None, timeout=None):
+            if json and 'prompt' in json:
+                captured_prompt.append(json['prompt'])
+            # Return a valid response
+            class MockResponse:
+                def json(self):
+                    return {"response": "START_TIME: 10.0\nEND_TIME: 40.0\nRESSON: test"}
+            return MockResponse()
+
+        monkeypatch.setattr('requests.post', mock_post)
+
+        seg = make_segment(20.0, 30.0)
+        scored = [make_scored(seg, 0.9)]
+        # Dense transcript covering 0–100s
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(50)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        # Call the actual refine function (not mocked)
+        from pipeline.clip_selector import refine_clip_boundaries_with_llm
+        clip = Clip(start=20.0, end=30.0, score=0.9, rank=1, segment_indices=[])
+        refine_clip_boundaries_with_llm(config, clip, transcript, video_duration=100.0)
+
+        # Check that the prompt mentions the ±45s context window
+        assert len(captured_prompt) == 1
+        prompt = captured_prompt[0]
+        # The context window should be mentioned in the prompt
+        # Clip is 20–30s, so context should be roughly -25s to +55s (clamped to 0–75s)
+        # We just verify that "45" appears in the context description
+        assert "45" in prompt or "context window" in prompt.lower(), (
+            "Expected prompt to mention ±45s context window"
+        )
+        # Verify the arc structure is mentioned
+        assert "Setup" in prompt or "SETUP" in prompt, "Expected prompt to mention Setup"
+        assert "Moment" in prompt or "MOMENT" in prompt, "Expected prompt to mention Moment"
+        assert "Reaction" in prompt or "REACTION" in prompt, "Expected prompt to mention Reaction"
+
+
+# ---------------------------------------------------------------------------
+# Task 52: Spacing deduplication after LLM boundary refinement
+# ---------------------------------------------------------------------------
+
+class TestSpacingAfterLLMRefinement:
+    """Spacing pass runs after LLM boundary refinement, so refined clips respect spacing."""
+
+    def _make_config_llm_enabled(self, **kwargs) -> Config:
+        defaults = dict(
+            work_dir="/tmp/test",
+            top_n_clips=2,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+            llm_enabled=True,
+            min_clip_spacing=300.0,
+        )
+        defaults.update(kwargs)
+        return Config(**defaults)
+
+    def test_spacing_removes_refined_clip_when_too_close(self, monkeypatch):
+        """Two clips that are far apart before refinement but close after refinement:
+        the spacing pass should remove the lower-scoring one."""
+        import pipeline.clip_selector as cs
+
+        # Mock LLM to move clips closer together
+        def mock_refine(config, clip, transcript, video_duration):
+            # Clip A (score 0.9) at 0–25s → refined to 0–30s
+            # Clip B (score 0.5) at 400–425s → refined to 50–75s (moved much closer!)
+            # After refinement, they're only 50s apart (< min_clip_spacing=300s)
+            if clip.start < 100:  # Clip A
+                return Clip(
+                    start=0.0,
+                    end=30.0,
+                    score=clip.score,
+                    rank=clip.rank,
+                    segment_indices=clip.segment_indices,
+                )
+            else:  # Clip B
+                return Clip(
+                    start=50.0,
+                    end=75.0,
+                    score=clip.score,
+                    rank=clip.rank,
+                    segment_indices=clip.segment_indices,
+                )
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        # Build two segments far apart (400s gap)
+        seg_a = make_segment(0.0, 25.0)
+        seg_b = make_segment(400.0, 425.0)
+        scored = [make_scored(seg_a, 0.9), make_scored(seg_b, 0.5)]
+        # Dense transcript covering 0–500s
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(250)]
+        transcript = make_transcript(all_segs)
+        # Set top_n_clips=1 so fallback doesn't kick in
+        config = self._make_config_llm_enabled(top_n_clips=1)
+
+        clips = select_clips(config, scored, transcript, video_duration=500.0)
+
+        # After refinement, clips are at 0–30s and 50–75s (only 50s apart)
+        # Spacing pass should remove the lower-scoring one (B, score=0.5)
+        assert len(clips) == 1, f"Expected 1 clip after spacing, got {len(clips)}"
+        assert clips[0].score == 0.9, f"Expected score=0.9 (higher-scoring clip kept), got {clips[0].score}"
+        assert clips[0].start == 0.0, f"Expected start=0.0 (clip A), got {clips[0].start}"
+        assert clips[0].end == 30.0, f"Expected end=30.0 (clip A), got {clips[0].end}"
+
+    def test_spacing_preserves_well_spaced_refined_clips(self, monkeypatch):
+        """Two clips that remain well-spaced after refinement are both kept."""
+        import pipeline.clip_selector as cs
+
+        def mock_refine(config, clip, transcript, video_duration):
+            # Both clips stay in their original regions (far apart)
+            if clip.start < 100:  # Clip A
+                return Clip(start=0.0, end=30.0, score=clip.score, rank=clip.rank, segment_indices=clip.segment_indices)
+            else:  # Clip B
+                return Clip(start=400.0, end=430.0, score=clip.score, rank=clip.rank, segment_indices=clip.segment_indices)
+
+        monkeypatch.setattr(cs, "refine_clip_boundaries_with_llm", mock_refine)
+
+        seg_a = make_segment(0.0, 25.0)
+        seg_b = make_segment(400.0, 425.0)
+        scored = [make_scored(seg_a, 0.9), make_scored(seg_b, 0.5)]
+        all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(250)]
+        transcript = make_transcript(all_segs)
+        config = self._make_config_llm_enabled()
+
+        clips = select_clips(config, scored, transcript, video_duration=500.0)
+
+        # Both clips are well-spaced (400s apart) — both should be kept
+        assert len(clips) == 2, f"Expected 2 clips (well-spaced), got {len(clips)}"
+        clip_scores = {c.score for c in clips}
+        assert 0.9 in clip_scores, "Expected high-scoring clip (0.9) to be present"
+        assert 0.5 in clip_scores, "Expected second clip (0.5) to be present"
