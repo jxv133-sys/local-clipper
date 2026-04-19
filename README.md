@@ -265,7 +265,14 @@ If Ollama is running on a different machine, pass its address via `--llm-endpoin
 python3 main.py video.mp4 --llm --llm-endpoint http://192.168.1.100:11434/api/generate
 ```
 
-When using Docker Compose, the `app` service connects to the `ollama` service automatically via the `OLLAMA_HOST` environment variable. No extra configuration needed.
+When using Docker Compose, the `app` service connects to the `ollama` service automatically via the `OLLAMA_HOST` environment variable. No extra configuration is needed inside the app.
+
+If you bind Ollama to a different host port, set `OLLAMA_HOST` before running the CLI or web server, for example:
+
+```bash
+export OLLAMA_HOST=http://localhost:11435
+python3 main.py video.mp4 --llm
+```
 
 ---
 

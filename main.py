@@ -87,7 +87,8 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     cfg.whisper_model = args.whisper_model
     cfg.top_n_clips = args.top_n
     cfg.llm_enabled = args.llm
-    cfg.llm_endpoint = args.llm_endpoint
+    if args.llm_endpoint:
+        cfg.llm_endpoint = args.llm_endpoint
     cfg.llm_model = args.llm_model
     if args.keywords:
         cfg.keywords = args.keywords
@@ -170,8 +171,8 @@ def main() -> None:
                         help="Number of highlight clips to generate (default: 5)")
     parser.add_argument("--llm", action="store_true",
                         help="Enable local LLM scoring via Ollama")
-    parser.add_argument("--llm-endpoint", default="http://localhost:11434/api/generate",
-                        help="LLM endpoint URL")
+    parser.add_argument("--llm-endpoint", default=None,
+                        help="LLM endpoint URL (default: OLLAMA_HOST env or http://localhost:11434/api/generate)")
     parser.add_argument("--llm-model", default="llama3",
                         help="LLM model name (default: llama3)")
     parser.add_argument("--keywords", nargs="+",

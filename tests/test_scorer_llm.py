@@ -49,6 +49,12 @@ def make_config(
     return cfg
 
 
+def test_config_uses_ollama_host_env_var(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "http://ollama:11434")
+    cfg = Config(work_dir="/tmp/test")
+    assert cfg.llm_endpoint == "http://ollama:11434/api/generate"
+
+
 def make_segment(text: str = "hello world", start: float = 0.0, end: float = 1.0) -> Segment:
     return Segment(start=start, end=end, text=text)
 

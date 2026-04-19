@@ -1,4 +1,15 @@
+import os
 from dataclasses import dataclass, field
+
+
+def _default_llm_endpoint() -> str:
+    host = os.getenv("OLLAMA_HOST", "").strip()
+    if host:
+        host = host.rstrip("/")
+        if host.endswith("/api/generate"):
+            return host
+        return f"{host}/api/generate"
+    return "http://localhost:11434/api/generate"
 
 
 @dataclass
@@ -26,7 +37,7 @@ class Config:
 
     # LLM (optional)
     llm_enabled: bool = False
-    llm_endpoint: str = "http://localhost:11434/api/generate"
+    llm_endpoint: str = field(default_factory=_default_llm_endpoint)
     llm_model: str = "llama3"
     # Maximum number of candidate windows sent to the LLM.
     # The scorer picks the top-scoring moments (spaced >= min_clip_duration apart)
