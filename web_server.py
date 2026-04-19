@@ -226,7 +226,12 @@ def _run_pipeline_for_job(job: Job) -> None:
         job.add_progress(2, 7, "Transcription", 10)
         log("[Transcriber] Starting...")
         t0 = time.time()
-        transcript = transcribe(job.config, wav_path)
+        
+        # Define progress callback for transcription
+        def transcription_progress(percentage: int) -> None:
+            job.add_progress(2, 7, "Transcription", percentage)
+        
+        transcript = transcribe(job.config, wav_path, progress_callback=transcription_progress)
         log(f"[Transcriber] Done in {time.time() - t0:.1f}s — {len(transcript.segments)} segment(s)")
         job.add_progress(2, 7, "Transcription", 60)
 

@@ -92,7 +92,7 @@ def _log_vad_removed(segments: list[Segment], audio_duration: float) -> None:
         )
 
 
-def transcribe(config: Config, wav_path: str) -> Transcript:
+def transcribe(config: Config, wav_path: str, progress_callback=None) -> Transcript:
     """Transcribe *wav_path* using the local Whisper model.
 
     Prefers faster-whisper (CTranslate2) for speed. Falls back to
@@ -105,6 +105,8 @@ def transcribe(config: Config, wav_path: str) -> Transcript:
         config: Pipeline configuration (``work_dir`` and ``whisper_model``
             must be set).
         wav_path: Absolute or relative path to the input ``.wav`` file.
+        progress_callback: Optional callback function(percentage: int) called
+            during transcription to report progress (10-60%).
 
     Returns:
         A :class:`Transcript` containing one :class:`Segment` per Whisper
@@ -121,9 +123,9 @@ def transcribe(config: Config, wav_path: str) -> Transcript:
     t0 = time.time()
 
     if _FASTER_WHISPER_AVAILABLE:
-        segments = _transcribe_faster_whisper(config, wav_path)
+        segments = _transcribe_faster_whisper(config, wav_path, progress_callback)
     else:
-        segments = _transcribe_openai_whisper(config, wav_path)
+        segments = _transcribe_openai_whisper(config, wav_path, progress_callback)
 
     transcript = Transcript(segments=segments)
 
@@ -155,11 +157,16 @@ def transcribe(config: Config, wav_path: str) -> Transcript:
     return transcript
 
 
-def _transcribe_faster_whisper(config: Config, wav_path: str) -> list[Segment]:
+def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=None) -> list[Segment]:
     """Transcribe using faster-whisper (CTranslate2 backend).
 
     Uses int8 quantization on CPU for maximum speed.
     On Apple Silicon this runs on CPU with BLAS acceleration.
+    
+    Args:
+        config: Pipeline configuration.
+        wav_path: Path to WAV file.
+        progress_callback: Optional callback(percentage) for progress updates.
     """
     try:
         # int8 quantization gives ~2x additional speedup on CPU with minimal
@@ -174,6 +181,12 @@ def _transcribe_faster_whisper(config: Config, wav_path: str) -> list[Segment]:
             f"Failed to load faster-whisper model '{config.whisper_model}': {exc}"
         ) from exc
 
+    # Get audio duration to estimate progress
+    try:
+        audio_duration = _get_wav_duration(wav_path)
+    except Exception:
+        audio_duration = None
+
     # num_workers is not supported in all versions — use beam_size for speed
     raw_segments, _info = model.transcribe(
         wav_path,
@@ -185,20 +198,43 @@ def _transcribe_faster_whisper(config: Config, wav_path: str) -> list[Segment]:
         beam_size=1,              # greedy decoding — faster, minimal accuracy loss
     )
 
-    # faster-whisper returns a generator — consume it
+    # faster-whisper returns a generator — consume it and track progress
     segments: list[Segment] = []
+    last_reported_pct = 10
+    
     for seg in raw_segments:
         segments.append(Segment(
             start=float(seg.start),
             end=float(seg.end),
             text=seg.text,
         ))
+        
+        # Report progress based on how far through the audio we've transcribed
+        if progress_callback and audio_duration and audio_duration > 0:
+            # Map segment end time to progress percentage (10% → 60%)
+            progress_pct = int(10 + (seg.end / audio_duration) * 50)
+            progress_pct = min(60, max(10, progress_pct))
+            
+            # Only report when percentage increases by at least 5%
+            if progress_pct >= last_reported_pct + 5:
+                progress_callback(progress_pct)
+                last_reported_pct = progress_pct
+
+    # Ensure we report 60% at the end
+    if progress_callback:
+        progress_callback(60)
 
     return segments
 
 
-def _transcribe_openai_whisper(config: Config, wav_path: str) -> list[Segment]:
-    """Transcribe using openai-whisper (fallback)."""
+def _transcribe_openai_whisper(config: Config, wav_path: str, progress_callback=None) -> list[Segment]:
+    """Transcribe using openai-whisper (fallback).
+    
+    Args:
+        config: Pipeline configuration.
+        wav_path: Path to WAV file.
+        progress_callback: Optional callback(percentage) for progress updates.
+    """
     try:
         model = whisper.load_model(config.whisper_model)
     except Exception as exc:
@@ -206,7 +242,15 @@ def _transcribe_openai_whisper(config: Config, wav_path: str) -> list[Segment]:
             f"Failed to load Whisper model '{config.whisper_model}': {exc}"
         ) from exc
 
+    # Report initial progress
+    if progress_callback:
+        progress_callback(15)
+
     result = model.transcribe(wav_path, word_timestamps=True)
+
+    # Report completion
+    if progress_callback:
+        progress_callback(60)
 
     raw_segments = result.get("segments", []) or []
     return [
