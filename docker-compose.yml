@@ -10,9 +10,19 @@ services:
       - ./output:/app/output
     environment:
       - OLLAMA_HOST=http://ollama:11434
+      - OMP_NUM_THREADS=4
+      - NUMBA_NUM_THREADS=4
     depends_on:
       - ollama
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
 
   ollama:
     image: ollama/ollama:latest
@@ -21,3 +31,12 @@ services:
     ports:
       - "11435:11434"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
