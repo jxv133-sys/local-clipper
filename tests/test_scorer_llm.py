@@ -22,7 +22,7 @@ from hypothesis import strategies as st
 from config import Config
 from pipeline.exceptions import LLMScoringError
 from pipeline.models import ScoredSegment, Segment, Transcript
-from pipeline.scorer import compute_llm_score_with_context, score_segments
+from pipeline.scorer import _build_candidate_windows, compute_llm_score_with_context, score_segments
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -271,9 +271,11 @@ class TestScoreSegments:
         assert result[0].llm_score == 0.0
 
     def test_llm_disabled_clip_score_uses_only_text_and_audio(self, tmp_path) -> None:
-        """When llm_enabled=False, clip_score = text_weight*text + audio_weight*audio."""
+        """When llm_enabled=False and spike_weight=0 and burst_weight=0, clip_score = text_weight*text + audio_weight*audio."""
         wav_path = make_wav(tmp_path)
         config = make_config(llm_enabled=False, text_weight=0.4, audio_weight=0.6, llm_weight=0.0)
+        config.spike_weight = 0.0  # disable spike so the formula is text+audio only
+        config.burst_weight = 0.0  # disable burst so the formula is text+audio only
         segments = [make_segment("Hello.", 0.0, 1.0)]
         transcript = Transcript(segments=segments)
 
@@ -357,3 +359,415 @@ class TestScoreSegments:
         result = score_segments(config, transcript, wav_path)
 
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — _build_candidate_windows (dual-track audio-only candidate track)
+# ---------------------------------------------------------------------------
+
+class TestBuildCandidateWindowsDualTrack:
+    """Tests for the dual-track candidate selection in _build_candidate_windows."""
+
+    def _make_config(
+        self,
+        llm_max_candidates: int = 6,
+        llm_audio_candidates: int = 3,
+        min_clip_duration: float = 5.0,
+        text_weight: float = 0.5,
+        audio_weight: float = 0.5,
+    ) -> Config:
+        cfg = Config(work_dir="/tmp/test")
+        cfg.llm_max_candidates = llm_max_candidates
+        cfg.llm_audio_candidates = llm_audio_candidates
+        cfg.min_clip_duration = min_clip_duration
+        cfg.text_weight = text_weight
+        cfg.audio_weight = audio_weight
+        return cfg
+
+    def _make_segments(self, n: int, spacing: float = 10.0) -> list[Segment]:
+        """Create n segments spaced *spacing* seconds apart."""
+        return [
+            Segment(start=float(i) * spacing, end=float(i) * spacing + 1.0, text=f"seg{i}")
+            for i in range(n)
+        ]
+
+    # ------------------------------------------------------------------
+    # Test 1: high spike / low text segment gets included via audio track
+    # ------------------------------------------------------------------
+
+    def test_high_spike_low_text_included(self) -> None:
+        """A segment with high spike score but low text+audio score is included
+        in the candidates via the audio-only track."""
+        # 8 segments spaced 10s apart (well beyond min_clip_duration=5s)
+        segments = self._make_segments(8, spacing=10.0)
+        cfg = self._make_config(
+            llm_max_candidates=6,
+            llm_audio_candidates=3,
+            min_clip_duration=5.0,
+        )
+
+        # All segments have low text and audio scores
+        text_scores = [0.1] * 8
+        audio_scores = [0.1] * 8
+
+        # Segment 5 has a massive spike score but still low text+audio
+        spike_scores = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+
+        candidates = _build_candidate_windows(
+            segments, text_scores, audio_scores, cfg, spike_scores
+        )
+
+        candidate_indices = [idx for idx, _ in candidates]
+        assert 5 in candidate_indices, (
+            "Segment 5 (high spike, low text) should be included via the audio track"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2: low spike AND low text segment is NOT included
+    # ------------------------------------------------------------------
+
+    def test_low_spike_low_text_excluded(self) -> None:
+        """A segment with low spike score AND low text+audio score is NOT
+        included when better candidates exist on both tracks."""
+        segments = self._make_segments(8, spacing=10.0)
+        cfg = self._make_config(
+            llm_max_candidates=4,
+            llm_audio_candidates=2,
+            min_clip_duration=5.0,
+        )
+
+        # Segments 0-3 have high text+audio AND high spike scores
+        # Segments 4-7 have low scores on ALL tracks
+        text_scores = [0.9, 0.9, 0.9, 0.9, 0.05, 0.05, 0.05, 0.05]
+        audio_scores = [0.9, 0.9, 0.9, 0.9, 0.05, 0.05, 0.05, 0.05]
+        spike_scores = [0.9, 0.9, 0.9, 0.9, 0.05, 0.05, 0.05, 0.05]
+
+        candidates = _build_candidate_windows(
+            segments, text_scores, audio_scores, cfg, spike_scores
+        )
+
+        candidate_indices = [idx for idx, _ in candidates]
+        # Segments 4-7 have low scores on all tracks — none should appear
+        for bad_idx in [4, 5, 6, 7]:
+            assert bad_idx not in candidate_indices, (
+                f"Segment {bad_idx} (low spike, low text) should NOT be included"
+            )
+
+    # ------------------------------------------------------------------
+    # Test 3: deduplication — no two candidates within min_clip_duration
+    # ------------------------------------------------------------------
+
+    def test_deduplication_no_two_within_min_spacing(self) -> None:
+        """After merging both tracks, no two candidates should have midpoints
+        within min_clip_duration of each other."""
+        # 10 segments spaced 2s apart — many are within min_clip_duration=5s
+        segments = self._make_segments(10, spacing=2.0)
+        cfg = self._make_config(
+            llm_max_candidates=6,
+            llm_audio_candidates=3,
+            min_clip_duration=5.0,
+        )
+
+        # Alternate high text and high spike to stress-test deduplication
+        text_scores = [0.9 if i % 2 == 0 else 0.1 for i in range(10)]
+        audio_scores = [0.5] * 10
+        spike_scores = [0.1 if i % 2 == 0 else 0.9 for i in range(10)]
+
+        candidates = _build_candidate_windows(
+            segments, text_scores, audio_scores, cfg, spike_scores
+        )
+
+        # Check all pairs of candidates are spaced >= min_clip_duration apart
+        midpoints = [
+            (segments[idx].start + segments[idx].end) / 2.0
+            for idx, _ in candidates
+        ]
+        for i in range(len(midpoints)):
+            for j in range(i + 1, len(midpoints)):
+                gap = abs(midpoints[i] - midpoints[j])
+                assert gap >= cfg.min_clip_duration, (
+                    f"Candidates at midpoints {midpoints[i]:.1f}s and "
+                    f"{midpoints[j]:.1f}s are only {gap:.1f}s apart "
+                    f"(min_clip_duration={cfg.min_clip_duration}s)"
+                )
+
+    # ------------------------------------------------------------------
+    # Test 4: total candidates <= llm_max_candidates
+    # ------------------------------------------------------------------
+
+    def test_total_candidates_within_budget(self) -> None:
+        """The merged candidate list never exceeds llm_max_candidates."""
+        segments = self._make_segments(20, spacing=10.0)
+        cfg = self._make_config(
+            llm_max_candidates=6,
+            llm_audio_candidates=3,
+            min_clip_duration=5.0,
+        )
+
+        text_scores = [float(i) / 20.0 for i in range(20)]
+        audio_scores = [float(i) / 20.0 for i in range(20)]
+        spike_scores = [float(19 - i) / 20.0 for i in range(20)]
+
+        candidates = _build_candidate_windows(
+            segments, text_scores, audio_scores, cfg, spike_scores
+        )
+
+        assert len(candidates) <= cfg.llm_max_candidates
+
+    # ------------------------------------------------------------------
+    # Test 5: llm_audio_candidates=0 falls back to single-track behaviour
+    # ------------------------------------------------------------------
+
+    def test_zero_audio_candidates_single_track(self) -> None:
+        """When llm_audio_candidates=0, only the text+audio track is used."""
+        segments = self._make_segments(6, spacing=10.0)
+        cfg = self._make_config(
+            llm_max_candidates=3,
+            llm_audio_candidates=0,
+            min_clip_duration=5.0,
+        )
+
+        # Segment 5 has high spike but low text+audio
+        text_scores = [0.9, 0.8, 0.7, 0.1, 0.1, 0.1]
+        audio_scores = [0.9, 0.8, 0.7, 0.1, 0.1, 0.1]
+        spike_scores = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+        candidates = _build_candidate_windows(
+            segments, text_scores, audio_scores, cfg, spike_scores
+        )
+
+        candidate_indices = [idx for idx, _ in candidates]
+        # With no audio budget, segment 5 (high spike, low text) should NOT appear
+        assert 5 not in candidate_indices, (
+            "With llm_audio_candidates=0, spike-only segment should not be included"
+        )
+        # Top text+audio segments (0, 1, 2) should be selected
+        for expected in [0, 1, 2]:
+            assert expected in candidate_indices
+
+    # ------------------------------------------------------------------
+    # Test 6: deduplication keeps higher pre_score when tracks overlap
+    # ------------------------------------------------------------------
+
+    def test_deduplication_keeps_higher_prescore(self) -> None:
+        """When both tracks select the same segment (or nearby ones), the one
+        with the higher pre_score is kept."""
+        # Two segments very close together (within min_clip_duration)
+        segments = [
+            Segment(start=0.0, end=1.0, text="seg0"),
+            Segment(start=1.5, end=2.5, text="seg1"),  # 1.5s from seg0 — within 5s spacing
+        ]
+        cfg = self._make_config(
+            llm_max_candidates=4,
+            llm_audio_candidates=2,
+            min_clip_duration=5.0,
+        )
+
+        # seg0: high text+audio, low spike
+        # seg1: low text+audio, high spike
+        text_scores = [0.9, 0.1]
+        audio_scores = [0.9, 0.1]
+        spike_scores = [0.1, 0.9]
+
+        candidates = _build_candidate_windows(
+            segments, text_scores, audio_scores, cfg, spike_scores
+        )
+
+        # Only one of the two should appear (they're within min_clip_duration)
+        assert len(candidates) == 1
+        # seg0 has higher pre_score (0.9*0.5 + 0.9*0.5 = 0.9 vs 0.1*0.5 + 0.1*0.5 = 0.1)
+        assert candidates[0][0] == 0, "seg0 (higher pre_score) should be kept over seg1"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — prefilter weight decoupling (Task 43)
+# ---------------------------------------------------------------------------
+
+class TestPrefilterWeightDecoupling:
+    """Tests verifying that _build_candidate_windows uses llm_prefilter_*_weight
+    for candidate ranking, while score_segments still uses text_weight/audio_weight
+    for the final clip_score.
+    """
+
+    def _make_config(
+        self,
+        text_weight: float = 0.5,
+        audio_weight: float = 0.5,
+        llm_prefilter_text_weight: float = 0.2,
+        llm_prefilter_audio_weight: float = 0.8,
+        min_clip_duration: float = 5.0,
+        llm_max_candidates: int = 4,
+        llm_audio_candidates: int = 0,
+    ) -> Config:
+        cfg = Config(work_dir="/tmp/test")
+        cfg.text_weight = text_weight
+        cfg.audio_weight = audio_weight
+        cfg.llm_prefilter_text_weight = llm_prefilter_text_weight
+        cfg.llm_prefilter_audio_weight = llm_prefilter_audio_weight
+        cfg.min_clip_duration = min_clip_duration
+        cfg.llm_max_candidates = llm_max_candidates
+        cfg.llm_audio_candidates = llm_audio_candidates
+        cfg.spike_weight = 0.0
+        cfg.burst_weight = 0.0
+        return cfg
+
+    def _make_segments(self, n: int, spacing: float = 10.0) -> list[Segment]:
+        return [
+            Segment(start=float(i) * spacing, end=float(i) * spacing + 1.0, text=f"seg{i}")
+            for i in range(n)
+        ]
+
+    def test_prefilter_uses_prefilter_weights_not_final_weights(self) -> None:
+        """_build_candidate_windows ranks by llm_prefilter_*_weight, not text_weight/audio_weight.
+
+        Set up two segments:
+          - seg0: high text (0.9), low audio (0.1)
+          - seg1: low text (0.1), high audio (0.9)
+
+        With llm_prefilter_text_weight=0.2, llm_prefilter_audio_weight=0.8:
+          pre_score(seg0) = 0.2*0.9 + 0.8*0.1 = 0.18 + 0.08 = 0.26
+          pre_score(seg1) = 0.2*0.1 + 0.8*0.9 = 0.02 + 0.72 = 0.74  ← higher
+
+        With final weights text_weight=0.5, audio_weight=0.5:
+          final_score(seg0) = 0.5*0.9 + 0.5*0.1 = 0.50
+          final_score(seg1) = 0.5*0.1 + 0.5*0.9 = 0.50  ← tied
+
+        The prefilter should rank seg1 first (audio-heavy prefilter).
+        """
+        segments = [
+            Segment(start=0.0, end=1.0, text="seg0"),
+            Segment(start=20.0, end=21.0, text="seg1"),  # spaced > min_clip_duration
+        ]
+        cfg = self._make_config(
+            text_weight=0.5,
+            audio_weight=0.5,
+            llm_prefilter_text_weight=0.2,
+            llm_prefilter_audio_weight=0.8,
+            min_clip_duration=5.0,
+            llm_max_candidates=2,
+        )
+
+        text_scores = [0.9, 0.1]
+        audio_scores = [0.1, 0.9]
+
+        candidates = _build_candidate_windows(segments, text_scores, audio_scores, cfg)
+
+        # seg1 should rank first because its prefilter pre_score (0.74) > seg0 (0.26)
+        assert candidates[0][0] == 1, (
+            "seg1 (high audio, low text) should rank first with audio-heavy prefilter weights"
+        )
+
+    def test_high_audio_low_text_ranks_higher_with_audio_heavy_prefilter(self) -> None:
+        """A segment with high audio score but low text score ranks higher when
+        llm_prefilter_audio_weight is high (0.8) vs llm_prefilter_text_weight (0.2).
+        """
+        segments = self._make_segments(4, spacing=10.0)
+        cfg = self._make_config(
+            llm_prefilter_text_weight=0.2,
+            llm_prefilter_audio_weight=0.8,
+            min_clip_duration=5.0,
+            llm_max_candidates=4,
+        )
+
+        # seg2: high audio (0.95), low text (0.05) — should rank high with audio-heavy prefilter
+        # seg3: high text (0.95), low audio (0.05) — should rank lower
+        text_scores = [0.5, 0.5, 0.05, 0.95]
+        audio_scores = [0.5, 0.5, 0.95, 0.05]
+
+        candidates = _build_candidate_windows(segments, text_scores, audio_scores, cfg)
+
+        indices = [idx for idx, _ in candidates]
+        # seg2 pre_score = 0.2*0.05 + 0.8*0.95 = 0.01 + 0.76 = 0.77
+        # seg3 pre_score = 0.2*0.95 + 0.8*0.05 = 0.19 + 0.04 = 0.23
+        assert indices.index(2) < indices.index(3), (
+            "seg2 (high audio) should rank before seg3 (high text) with audio-heavy prefilter"
+        )
+
+    def test_final_clip_score_uses_text_audio_weight_not_prefilter(self, tmp_path) -> None:
+        """score_segments final clip_score uses text_weight/audio_weight, not prefilter weights.
+
+        With llm disabled, spike_weight=0, burst_weight=0:
+          clip_score = text_weight * text_score + audio_weight * audio_score
+
+        This must NOT use llm_prefilter_text_weight or llm_prefilter_audio_weight.
+        """
+        # Build a WAV with two distinct energy levels
+        n_samples = int(2.0 * SAMPLE_RATE)
+        # First second: loud; second second: quiet
+        audio_data = np.concatenate([
+            np.ones(SAMPLE_RATE, dtype=np.float32) * 0.8,
+            np.ones(SAMPLE_RATE, dtype=np.float32) * 0.1,
+        ])
+        wav_path = str(tmp_path / "test.wav")
+        write_wav(wav_path, audio_data)
+
+        cfg = Config(work_dir="/tmp/test")
+        cfg.llm_enabled = False
+        cfg.text_weight = 0.5
+        cfg.audio_weight = 0.5
+        cfg.llm_prefilter_text_weight = 0.2   # different from final weights
+        cfg.llm_prefilter_audio_weight = 0.8  # different from final weights
+        cfg.llm_weight = 0.0
+        cfg.spike_weight = 0.0
+        cfg.burst_weight = 0.0
+
+        segments = [make_segment("Hello.", 0.0, 1.0)]
+        transcript = Transcript(segments=segments)
+
+        result = score_segments(cfg, transcript, wav_path)
+
+        ss = result[0]
+        # clip_score must equal text_weight*text + audio_weight*audio (final weights)
+        expected = cfg.text_weight * ss.text_score + cfg.audio_weight * ss.audio_score
+        assert abs(ss.clip_score - expected) < 1e-9, (
+            f"clip_score {ss.clip_score:.6f} != text_weight*text + audio_weight*audio "
+            f"({expected:.6f}). Final scoring must use text_weight/audio_weight, "
+            f"not the prefilter weights."
+        )
+
+    def test_prefilter_weights_independent_of_final_weights(self) -> None:
+        """Changing llm_prefilter_*_weight does not affect the pre_score formula
+        used in _build_candidate_windows when final weights differ.
+
+        Verify that the ranking changes when prefilter weights change, confirming
+        the prefilter weights are actually being used.
+        """
+        segments = [
+            Segment(start=0.0, end=1.0, text="seg0"),
+            Segment(start=20.0, end=21.0, text="seg1"),
+        ]
+
+        text_scores = [0.9, 0.1]
+        audio_scores = [0.1, 0.9]
+
+        # Config A: audio-heavy prefilter → seg1 ranks first
+        cfg_a = Config(work_dir="/tmp/test")
+        cfg_a.text_weight = 0.5
+        cfg_a.audio_weight = 0.5
+        cfg_a.llm_prefilter_text_weight = 0.1
+        cfg_a.llm_prefilter_audio_weight = 0.9
+        cfg_a.min_clip_duration = 5.0
+        cfg_a.llm_max_candidates = 2
+        cfg_a.llm_audio_candidates = 0
+
+        # Config B: text-heavy prefilter → seg0 ranks first
+        cfg_b = Config(work_dir="/tmp/test")
+        cfg_b.text_weight = 0.5
+        cfg_b.audio_weight = 0.5
+        cfg_b.llm_prefilter_text_weight = 0.9
+        cfg_b.llm_prefilter_audio_weight = 0.1
+        cfg_b.min_clip_duration = 5.0
+        cfg_b.llm_max_candidates = 2
+        cfg_b.llm_audio_candidates = 0
+
+        candidates_a = _build_candidate_windows(segments, text_scores, audio_scores, cfg_a)
+        candidates_b = _build_candidate_windows(segments, text_scores, audio_scores, cfg_b)
+
+        # Audio-heavy prefilter: seg1 (high audio) should rank first
+        assert candidates_a[0][0] == 1, (
+            "With audio-heavy prefilter, seg1 (high audio) should rank first"
+        )
+        # Text-heavy prefilter: seg0 (high text) should rank first
+        assert candidates_b[0][0] == 0, (
+            "With text-heavy prefilter, seg0 (high text) should rank first"
+        )

@@ -85,33 +85,36 @@ def select_clips(
         if seed_idx >= 0:
             included_indices = [seed_idx]
 
-        # Expand outward using adjacent transcript segments
+        # Expand outward using adjacent transcript segments.
+        #
+        # Gap handling: max_expansion_gap is a *hard boundary* — we will not
+        # cross a gap larger than this value.  When a gap is too large we stop
+        # expanding in that direction entirely (the silence represents a scene
+        # or topic change we don't want to span).
         if seed_idx >= 0:
             left_idx = seed_idx - 1
             right_idx = seed_idx + 1
+            left_blocked = False   # True once we hit a gap that is too large
+            right_blocked = False
 
             while (clip_end - clip_start) < config.min_clip_duration:
-                can_expand_left = left_idx >= 0
-                can_expand_right = right_idx < len(transcript.segments)
+                can_expand_left = (not left_blocked) and left_idx >= 0
+                can_expand_right = (not right_blocked) and right_idx < len(transcript.segments)
 
                 if not can_expand_left and not can_expand_right:
                     break
 
-                # Determine which direction to expand
-                # Prefer the direction that adds more duration, or alternate
                 left_seg = transcript.segments[left_idx] if can_expand_left else None
                 right_seg = transcript.segments[right_idx] if can_expand_right else None
 
-                # Try to expand in the direction that keeps us within max_clip_duration
                 expanded = False
 
-                # Try left first if it would not exceed max duration and gap is within limit
+                # --- Try left ---
                 if can_expand_left and left_seg is not None:
                     left_gap = clip_start - left_seg.end
                     if left_gap > config.max_expansion_gap:
-                        # Silence gap too large — stop expanding left
-                        can_expand_left = False
-                        left_idx = -1  # prevent further left expansion
+                        # Gap too large — permanently block this direction
+                        left_blocked = True
                     else:
                         new_start = left_seg.start
                         new_duration = clip_end - new_start
@@ -120,14 +123,16 @@ def select_clips(
                             included_indices.insert(0, left_idx)
                             left_idx -= 1
                             expanded = True
+                        else:
+                            # Adding this segment would exceed max duration — block left
+                            left_blocked = True
 
-                # Try right if we still need more duration and gap is within limit
+                # --- Try right (only if still short) ---
                 if (clip_end - clip_start) < config.min_clip_duration and can_expand_right and right_seg is not None:
                     right_gap = right_seg.start - clip_end
                     if right_gap > config.max_expansion_gap:
-                        # Silence gap too large — stop expanding right
-                        can_expand_right = False
-                        right_idx = len(transcript.segments)  # prevent further right expansion
+                        # Gap too large — permanently block this direction
+                        right_blocked = True
                     else:
                         new_end = right_seg.end
                         new_duration = new_end - clip_start
@@ -136,6 +141,9 @@ def select_clips(
                             included_indices.append(right_idx)
                             right_idx += 1
                             expanded = True
+                        else:
+                            # Adding this segment would exceed max duration — block right
+                            right_blocked = True
 
                 if not expanded:
                     break

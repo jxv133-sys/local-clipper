@@ -35,6 +35,8 @@ def compute_text_score(config: Config, segment: Segment) -> float:
 
     Scoring components:
     - +2.0 per keyword occurrence (case-insensitive)
+    - +reaction_weight (default 3.0) per reaction keyword occurrence
+      (whole-word match, case-insensitive)
     - +0.02 per character in segment.text (rewards longer speech)
     - +1.5 per '!' in segment.text
     - +1.0 per '?' in segment.text
@@ -55,6 +57,12 @@ def compute_text_score(config: Config, segment: Segment) -> float:
                 break
             raw_score += 2.0
             pos = idx + len(kw)
+
+    # Reaction keywords: whole-word, case-insensitive matching
+    for rk in config.reaction_keywords:
+        pattern = r'(?<!\w)' + re.escape(rk.lower()) + r'(?!\w)'
+        count = len(re.findall(pattern, text_lower))
+        raw_score += config.reaction_weight * count
 
     raw_score += len(text) * 0.02
     raw_score += text.count("!") * 1.5
@@ -77,6 +85,21 @@ def compute_text_score(config: Config, segment: Segment) -> float:
 
 def compute_audio_score(segments: list[Segment], wav_path: str) -> list[float]:
     """Compute normalized RMS energy scores for all segments in one WAV pass."""
+    _, raw_rms = compute_audio_score_with_raw(segments, wav_path)
+    max_rms = max(raw_rms) if raw_rms else 0.0
+    if max_rms == 0.0:
+        return [0.0] * len(segments)
+    return [v / max_rms for v in raw_rms]
+
+
+def compute_audio_score_with_raw(
+    segments: list[Segment], wav_path: str
+) -> tuple[list[float], list[float]]:
+    """Return (normalized_scores, raw_rms_values) for all segments.
+
+    normalized_scores: each value in [0.0, 1.0] relative to the loudest segment.
+    raw_rms_values: absolute RMS amplitude in [0.0, ~1.0] for float32 audio.
+    """
     sample_rate, data = scipy.io.wavfile.read(wav_path)
 
     if data.ndim == 2:
@@ -89,18 +112,159 @@ def compute_audio_score(segments: list[Segment], wav_path: str) -> list[float]:
         data = data.astype(np.float32)
 
     total_samples = len(data)
-    rms_values: list[float] = []
+    raw_rms: list[float] = []
 
     for seg in segments:
         s = max(0, min(int(seg.start * sample_rate), total_samples))
         e = max(0, min(int(seg.end * sample_rate), total_samples))
         chunk = data[s:e]
-        rms_values.append(float(np.sqrt(np.mean(chunk ** 2))) if len(chunk) > 0 else 0.0)
+        raw_rms.append(float(np.sqrt(np.mean(chunk ** 2))) if len(chunk) > 0 else 0.0)
 
-    max_rms = max(rms_values) if rms_values else 0.0
+    max_rms = max(raw_rms) if raw_rms else 0.0
     if max_rms == 0.0:
-        return [0.0] * len(segments)
-    return [v / max_rms for v in rms_values]
+        return [0.0] * len(segments), raw_rms
+    normalized = [v / max_rms for v in raw_rms]
+    return normalized, raw_rms
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: spike score (audio burst detection)
+# ---------------------------------------------------------------------------
+
+_SPIKE_BASELINE_WINDOW_SECONDS = 30.0  # rolling baseline window before each segment
+_SPIKE_STRONG_RATIO = 3.0              # ratio at which spike_score saturates near 1.0
+
+
+def compute_spike_score(segments: list[Segment], wav_path: str) -> list[float]:
+    """Compute a spike score for each segment based on sudden audio energy bursts.
+
+    Algorithm:
+    - For each segment, compute the RMS of the audio within the segment.
+    - Compute a rolling baseline RMS over the 30 seconds immediately before
+      the segment start.
+    - spike_ratio = segment_rms / baseline_rms
+    - Normalize to [0.0, 1.0]: ratio >= 3x → score near 1.0; ratio <= 1x → near 0.0.
+      Uses a linear ramp: score = clamp((ratio - 1.0) / (SPIKE_STRONG_RATIO - 1.0), 0, 1).
+    - If the baseline is silent (baseline_rms == 0) and the segment has audio,
+      the spike_score is 1.0 (silence-then-burst is a strong signal).
+    - If both baseline and segment are silent, spike_score is 0.0.
+
+    Returns a list of floats in [0.0, 1.0], one per segment.
+    """
+    if not segments:
+        return []
+
+    sample_rate, data = scipy.io.wavfile.read(wav_path)
+
+    if data.ndim == 2:
+        data = data.mean(axis=1)
+    if data.dtype == np.int16:
+        data = data.astype(np.float32) / 32768.0
+    elif data.dtype == np.int32:
+        data = data.astype(np.float32) / 2147483648.0
+    else:
+        data = data.astype(np.float32)
+
+    total_samples = len(data)
+
+    def _rms(start_sec: float, end_sec: float) -> float:
+        s = max(0, min(int(start_sec * sample_rate), total_samples))
+        e = max(0, min(int(end_sec * sample_rate), total_samples))
+        chunk = data[s:e]
+        if len(chunk) == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(chunk ** 2)))
+
+    spike_scores: list[float] = []
+    for seg in segments:
+        seg_rms = _rms(seg.start, seg.end)
+
+        # Rolling baseline: the 30s window immediately before segment start
+        baseline_start = max(0.0, seg.start - _SPIKE_BASELINE_WINDOW_SECONDS)
+        baseline_rms = _rms(baseline_start, seg.start)
+
+        if baseline_rms == 0.0:
+            # Silence before the segment — any audio is a burst
+            score = 1.0 if seg_rms > 0.0 else 0.0
+        else:
+            ratio = seg_rms / baseline_rms
+            # Linear ramp: 1x → 0.0, 3x → 1.0, clamped
+            score = max(0.0, min(1.0, (ratio - 1.0) / (_SPIKE_STRONG_RATIO - 1.0)))
+
+        spike_scores.append(score)
+
+    return spike_scores
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: burst score (silence-then-burst detection)
+# ---------------------------------------------------------------------------
+
+_BURST_PRE_WINDOW_SECONDS = 5.0  # seconds of audio to examine before segment start
+
+
+def compute_burst_score(segments: list[Segment], wav_path: str) -> list[float]:
+    """Detect the "silence → loud" transition pattern for each segment.
+
+    Algorithm:
+    1. First pass: compute global_rms_mean and global_rms_max across all segments.
+    2. For each segment:
+       a. Compute silence_before = avg RMS of the 5s window immediately before
+          segment start.
+       b. Compute segment_rms = RMS of the segment itself.
+       c. If silence_before < 0.1 * global_rms_mean AND
+             segment_rms > 0.5 * global_rms_max:
+          burst_score = 1.0  (binary: either it's a burst or it's not)
+       d. Otherwise: burst_score = 0.0
+    3. Log each detected burst at INFO level.
+
+    Returns a list of floats (each 0.0 or 1.0), one per segment.
+    """
+    if not segments:
+        return []
+
+    sample_rate, data = scipy.io.wavfile.read(wav_path)
+
+    if data.ndim == 2:
+        data = data.mean(axis=1)
+    if data.dtype == np.int16:
+        data = data.astype(np.float32) / 32768.0
+    elif data.dtype == np.int32:
+        data = data.astype(np.float32) / 2147483648.0
+    else:
+        data = data.astype(np.float32)
+
+    total_samples = len(data)
+
+    def _rms(start_sec: float, end_sec: float) -> float:
+        s = max(0, min(int(start_sec * sample_rate), total_samples))
+        e = max(0, min(int(end_sec * sample_rate), total_samples))
+        chunk = data[s:e]
+        if len(chunk) == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(chunk ** 2)))
+
+    # First pass: compute per-segment RMS and global stats
+    seg_rms_values: list[float] = [_rms(seg.start, seg.end) for seg in segments]
+    nonzero = [v for v in seg_rms_values if v > 0.0]
+    global_rms_mean = sum(nonzero) / len(nonzero) if nonzero else 0.0
+    global_rms_max = max(nonzero) if nonzero else 0.0
+
+    # Second pass: classify each segment
+    burst_scores: list[float] = []
+    for seg, seg_rms in zip(segments, seg_rms_values):
+        pre_start = max(0.0, seg.start - _BURST_PRE_WINDOW_SECONDS)
+        silence_before = _rms(pre_start, seg.start)
+
+        if (global_rms_mean > 0.0
+                and silence_before < 0.1 * global_rms_mean
+                and seg_rms > 0.5 * global_rms_max):
+            burst_scores.append(1.0)
+            logger.info("[Scorer] Burst detected at %.1fs (silence→loud)", seg.start)
+        else:
+            burst_scores.append(0.0)
+
+    return burst_scores
 
 
 # ---------------------------------------------------------------------------
@@ -112,13 +276,17 @@ def combine_scores(
     text: float,
     audio: float,
     llm: float | None,
+    spike: float = 0.0,
+    burst: float = 0.0,
 ) -> float:
-    """Weighted sum of text, audio, and optional LLM scores. Always >= 0."""
+    """Weighted sum of text, audio, spike, burst, and optional LLM scores. Always >= 0."""
     llm_value = llm if llm is not None else 0.0
     return max(0.0,
                config.text_weight * text
                + config.audio_weight * audio
-               + config.llm_weight * llm_value)
+               + config.llm_weight * llm_value
+               + config.spike_weight * spike
+               + config.burst_weight * burst)
 
 
 # ---------------------------------------------------------------------------
@@ -144,42 +312,104 @@ def _build_candidate_windows(
     text_scores: list[float],
     audio_scores: list[float],
     config: Config,
+    spike_scores: list[float] | None = None,
 ) -> list[tuple[int, float]]:
-    """Identify candidate seed indices for LLM scoring.
+    """Identify candidate seed indices for LLM scoring using two parallel tracks.
 
     Strategy:
-    1. Compute a combined pre-score (text + audio) for every segment.
-    2. Pick the top `llm_max_candidates` seeds, but enforce a minimum
-       spacing of `min_clip_duration` seconds between seeds so we don't
-       waste LLM calls on overlapping moments.
+    1. **Text+audio track**: rank by ``text_weight * text_score + audio_weight *
+       audio_score`` and pick the top
+       ``llm_max_candidates - llm_audio_candidates`` seeds (spaced at least
+       ``min_clip_duration`` apart).
+    2. **Audio spike track**: rank by ``spike_score`` alone and pick the top
+       ``llm_audio_candidates`` seeds (same spacing constraint, applied
+       independently of the text+audio track).
+    3. Merge both shortlists and deduplicate: if two candidates have midpoints
+       within ``min_clip_duration`` of each other, keep the one with the higher
+       ``pre_score`` (text+audio combined score).
+
+    This guarantees that high-energy silent moments always reach LLM scoring
+    even when their text score is low.
+
+    When ``llm_audio_candidates`` is 0 (or ``spike_scores`` is not provided),
+    the function falls back to the original single-track behaviour.
 
     Returns:
         List of (segment_index, pre_score) sorted by pre_score descending,
         length <= config.llm_max_candidates.
     """
+    n = len(segments)
     pre_scores = [
-        config.text_weight * text_scores[i] + config.audio_weight * audio_scores[i]
-        for i in range(len(segments))
+        config.llm_prefilter_text_weight * text_scores[i]
+        + config.llm_prefilter_audio_weight * audio_scores[i]
+        for i in range(n)
     ]
 
-    # Sort all segments by pre_score descending
-    ranked = sorted(range(len(segments)), key=lambda i: pre_scores[i], reverse=True)
+    min_spacing = config.min_clip_duration
 
-    selected: list[tuple[int, float]] = []
+    def _pick_top(
+        ranked_indices: list[int],
+        budget: int,
+        already_used: list[float],
+    ) -> list[tuple[int, float]]:
+        """Greedily pick up to *budget* seeds from *ranked_indices*, respecting
+        the minimum spacing constraint against *already_used* midpoints.
+
+        Returns a list of (segment_index, pre_score) and appends the chosen
+        midpoints to *already_used* in-place.
+        """
+        picked: list[tuple[int, float]] = []
+        for idx in ranked_indices:
+            if len(picked) >= budget:
+                break
+            seg_mid = (segments[idx].start + segments[idx].end) / 2.0
+            if any(abs(seg_mid - t) < min_spacing for t in already_used):
+                continue
+            picked.append((idx, pre_scores[idx]))
+            already_used.append(seg_mid)
+        return picked
+
+    audio_budget = config.llm_audio_candidates if spike_scores else 0
+    text_budget = config.llm_max_candidates - audio_budget
+
+    # --- Track 1: text+audio ---
+    ranked_text = sorted(range(n), key=lambda i: pre_scores[i], reverse=True)
     used_times: list[float] = []
-    min_spacing = config.min_clip_duration  # don't pick two seeds within one clip-length
+    text_track = _pick_top(ranked_text, text_budget, used_times)
 
-    for idx in ranked:
-        if len(selected) >= config.llm_max_candidates:
-            break
+    # --- Track 2: audio spike (independent ranking, shared spacing pool) ---
+    spike_track: list[tuple[int, float]] = []
+    if audio_budget > 0 and spike_scores:
+        ranked_spike = sorted(range(n), key=lambda i: spike_scores[i], reverse=True)
+        # used_times already contains midpoints from the text track so we
+        # don't place spike seeds on top of text+audio seeds.
+        spike_track = _pick_top(ranked_spike, audio_budget, used_times)
+
+    # --- Merge and deduplicate ---
+    # Build a combined list; if two entries are within min_spacing of each
+    # other (shouldn't happen given the shared used_times pool, but guard
+    # against floating-point edge cases), keep the one with higher pre_score.
+    merged: list[tuple[int, float]] = list(text_track) + list(spike_track)
+
+    # Deduplicate by proximity (keep higher pre_score)
+    deduped: list[tuple[int, float]] = []
+    for idx, score in merged:
         seg_mid = (segments[idx].start + segments[idx].end) / 2.0
-        # Skip if too close to an already-selected seed
-        if any(abs(seg_mid - t) < min_spacing for t in used_times):
-            continue
-        selected.append((idx, pre_scores[idx]))
-        used_times.append(seg_mid)
+        conflict = False
+        for j, (existing_idx, existing_score) in enumerate(deduped):
+            existing_mid = (segments[existing_idx].start + segments[existing_idx].end) / 2.0
+            if abs(seg_mid - existing_mid) < min_spacing:
+                # Keep the one with the higher pre_score
+                if score > existing_score:
+                    deduped[j] = (idx, score)
+                conflict = True
+                break
+        if not conflict:
+            deduped.append((idx, score))
 
-    return selected  # already in descending pre_score order
+    # Sort final list by pre_score descending
+    deduped.sort(key=lambda x: x[1], reverse=True)
+    return deduped
 
 
 def _score_window_with_llm(
@@ -187,20 +417,23 @@ def _score_window_with_llm(
     seed_idx: int,
     all_segments: list[Segment],
     all_audio_scores: list[float] | None = None,
+    all_raw_rms: list[float] | None = None,
+    global_rms_mean: float = 0.0,
+    global_rms_max: float = 0.0,
 ) -> tuple[float, LLMMetadata | None]:
     """Score a ~30s window centred on seed_idx using the LLM.
 
-    Builds a transcript window spanning roughly `min_clip_duration` seconds
-    around the seed segment.  Audio energy data for each line is included in
-    the prompt so the LLM can factor in loudness/excitement alongside the text.
+    Passes both relative (normalised) and absolute audio energy to the LLM
+    so it can distinguish a genuinely loud moment from one that is merely
+    louder than the rest of a quiet video.
 
-    Scoring rubric (1–10):
-      1–2  Completely boring — filler, dead air, nothing happening
-      3–4  Low interest — routine commentary, no reaction, flat delivery
+    Scoring rubric (1–10, strict):
+      1–2  Dead air, filler, nothing happening
+      3–4  Routine commentary, flat delivery, no reaction
       5–6  Mildly interesting — some engagement but nothing standout
-      7–8  Good clip — clear reaction, funny/exciting moment, strong energy
-      9    Great clip — very shareable, strong hook, high energy or emotion
-      10   Perfect clip — instant viral potential, unmissable moment
+      7–8  Good clip — clear reaction, funny/exciting, strong energy or emotion
+      9    Great clip — very shareable, strong hook, memorable moment
+      10   Perfect — instant viral potential, would stop a scroll
 
     Returns (llm_score_0_to_1, LLMMetadata | None).
     """
@@ -211,87 +444,115 @@ def _score_window_with_llm(
     window_start = seed.start - half
     window_end = seed.end + half
 
-    # Collect segments and their audio scores within the window
-    window_pairs: list[tuple[Segment, float]] = []
+    # Collect segments and their audio data within the window
+    window_data: list[tuple[Segment, float, float]] = []  # (seg, norm_score, raw_rms)
     for i, seg in enumerate(all_segments):
         if seg.end > window_start and seg.start < window_end:
-            audio_val = all_audio_scores[i] if all_audio_scores else 0.0
-            window_pairs.append((seg, audio_val))
+            norm = all_audio_scores[i] if all_audio_scores else 0.0
+            raw = all_raw_rms[i] if all_raw_rms else 0.0
+            window_data.append((seg, norm, raw))
 
-    if not window_pairs:
-        window_pairs = [(seed, all_audio_scores[seed_idx] if all_audio_scores else 0.0)]
+    if not window_data:
+        window_data = [(seed,
+                        all_audio_scores[seed_idx] if all_audio_scores else 0.0,
+                        all_raw_rms[seed_idx] if all_raw_rms else 0.0)]
 
-    # Compute window-level energy stats for context
-    energies = [e for _, e in window_pairs]
-    avg_energy = sum(energies) / len(energies) if energies else 0.0
-    peak_energy = max(energies) if energies else 0.0
+    # Window-level energy stats
+    raw_vals = [r for _, _, r in window_data]
+    norm_vals = [n for _, n, _ in window_data]
+    avg_raw = sum(raw_vals) / len(raw_vals) if raw_vals else 0.0
+    peak_raw = max(raw_vals) if raw_vals else 0.0
+    avg_norm = sum(norm_vals) / len(norm_vals) if norm_vals else 0.0
+    peak_norm = max(norm_vals) if norm_vals else 0.0
 
-    def _energy_bar(val: float) -> str:
-        """Convert 0–1 energy to a visual bar: ░░░░░ to █████."""
+    # Absolute energy level relative to the whole video
+    # Classify how loud this window is in absolute terms
+    if global_rms_max > 0:
+        abs_ratio = avg_raw / global_rms_max  # 0–1 vs loudest moment in video
+    else:
+        abs_ratio = avg_norm
+
+    if abs_ratio >= 0.6:
+        abs_energy_desc = "LOUD — one of the loudest moments in the video"
+    elif abs_ratio >= 0.35:
+        abs_energy_desc = "moderate — average loudness for this video"
+    elif abs_ratio >= 0.15:
+        abs_energy_desc = "quiet — below average loudness"
+    else:
+        abs_energy_desc = "very quiet / near-silent — whisper or background noise"
+
+    def _bar(val: float) -> str:
         filled = round(val * 5)
         return "█" * filled + "░" * (5 - filled)
 
-    # Build transcript block with per-line energy indicators
+    # Build transcript block with per-line energy
     lines: list[str] = []
-    for seg, audio_val in window_pairs:
+    for seg, norm, raw in window_data:
         marker = " <<<HIGHLIGHT>>>" if seg is seed else ""
-        bar = _energy_bar(audio_val)
+        # Show both relative bar and absolute % of video peak
+        abs_pct = int((raw / global_rms_max * 100)) if global_rms_max > 0 else 0
         lines.append(
-            f"[{seg.start:.1f}s-{seg.end:.1f}s] [energy:{bar}]{marker} {seg.text.strip()}"
+            f"[{seg.start:.1f}s-{seg.end:.1f}s] "
+            f"[vol:{_bar(norm)} {abs_pct:3d}% of peak]{marker} "
+            f"{seg.text.strip()}"
         )
     transcript_block = "\n".join(lines)
 
-    # Describe overall window energy in plain English
-    if avg_energy >= 0.75:
-        energy_desc = "very high energy throughout"
-    elif avg_energy >= 0.5:
-        energy_desc = "high energy"
-    elif avg_energy >= 0.3:
-        energy_desc = "moderate energy"
-    else:
-        energy_desc = "low energy / quiet"
-
     prompt = (
-        "You are a YouTube Shorts editor selecting the best highlight clips from a video.\n\n"
-        "You will be given a ~30-second transcript window with audio energy indicators.\n"
-        "Each line shows: [timestamp] [energy:█░░░░ to █████] followed by the spoken text.\n"
-        "Energy bars show how loud/intense that moment is (5 filled = maximum energy).\n\n"
-        f"WINDOW STATS: avg_energy={avg_energy:.2f}, peak_energy={peak_energy:.2f} ({energy_desc})\n\n"
+        "You are a strict YouTube Shorts editor. Your job is to find genuinely viral-worthy "
+        "moments — not just anything that sounds vaguely interesting.\n\n"
+        "You will see a ~30-second transcript window. Each line shows:\n"
+        "  [timestamp] [vol:█████ NNN% of peak] spoken text\n"
+        "The volume bar and percentage show how loud that moment is relative to the "
+        "LOUDEST moment in the entire video. 100% = maximum volume in the video.\n\n"
+        f"WINDOW ENERGY: avg={int(abs_ratio*100)}% of video peak, "
+        f"peak={int(peak_raw/global_rms_max*100) if global_rms_max > 0 else 0}% of video peak\n"
+        f"ABSOLUTE LEVEL: {abs_energy_desc}\n\n"
         f"TRANSCRIPT:\n{transcript_block}\n\n"
         "The segment marked <<<HIGHLIGHT>>> is the candidate clip moment.\n\n"
-        "SCORING RUBRIC (be strict — most clips should score 4–7):\n"
-        "  1–2  Dead air, filler, nothing happening, completely boring\n"
-        "  3–4  Routine commentary, flat delivery, low energy, no reaction\n"
-        "  5–6  Mildly interesting — some engagement but nothing standout\n"
-        "  7–8  Good clip — clear reaction, funny/exciting moment, strong energy or emotion\n"
-        "  9    Great clip — very shareable, strong hook, high energy, memorable moment\n"
-        " 10    Perfect clip — instant viral potential, unmissable, would stop a scroll\n\n"
-        "Consider BOTH the spoken content AND the audio energy when scoring.\n"
-        "A high-energy moment with weak text can still score well. "
-        "A great quote with flat energy scores lower than the same quote delivered with excitement.\n\n"
+        "SCORING RUBRIC — be STRICT. The average clip should score 4-5. "
+        "Only genuinely exciting moments score 7+:\n"
+        "  1   Dead air, silence, nothing happening\n"
+        "  2   Filler content, boring transition, no value\n"
+        "  3   Routine commentary, flat delivery, low energy\n"
+        "  4   Mildly interesting but forgettable — average content\n"
+        "  5   Decent moment, some engagement, watchable\n"
+        "  6   Good moment — clear reaction or interesting content\n"
+        "  7   Strong clip — funny, exciting, or emotionally engaging\n"
+        "  8   Very good — shareable, memorable, strong energy\n"
+        "  9   Excellent — would stop a scroll, high viral potential\n"
+        " 10   Perfect — unmissable, instant viral, once-in-a-stream moment\n\n"
+        "IMPORTANT RULES:\n"
+        "- A quiet/whispered moment (low volume %) should NEVER score above 5 unless "
+        "the words themselves are extraordinary\n"
+        "- Generic stream phrases ('follow the YouTube', 'w in the chat', 'here we go') "
+        "score 1-3 regardless of energy\n"
+        "- Score based on what a VIEWER would feel watching this cold, not the streamer's "
+        "perspective\n"
+        "- If you are unsure, score lower rather than higher\n\n"
         "Respond in EXACTLY this format (no extra text, no preamble):\n"
         "SCORE: <integer 1-10>\n"
         "TITLE: <catchy YouTube Shorts title, max 60 chars, no quotes>\n"
-        "DESCRIPTION: <1-2 sentences, engaging, relevant to the moment>\n"
+        "DESCRIPTION: <1-2 sentences describing what actually happens in the clip>\n"
         "TAGS: <5-8 hashtags e.g. #shorts #viral #funny>"
     )
 
-    raw = _call_llm(config, prompt)
+    raw_response = _call_llm(config, prompt)
 
-    score_match = re.search(r'SCORE:\s*(10|[1-9])', raw)
+    score_match = re.search(r'SCORE:\s*(10|[1-9])', raw_response)
     if score_match is None:
         logger.warning(
             "LLM returned no parseable SCORE for window at %.1fs; defaulting to 0.0. "
             "Response: %r",
-            seed.start, raw[:300],
+            seed.start, raw_response[:300],
         )
         return 0.0, None
 
     llm_score = float(score_match.group(1)) / 10.0
 
-    title_match = re.search(r'TITLE:\s*(.+)', raw)
-    desc_match = re.search(r'DESCRIPTION:\s*(.+)', raw)
-    tags_match = re.search(r'TAGS:\s*(.+)', raw)
+    title_match = re.search(r'TITLE:\s*(.+)', raw_response)
+    desc_match = re.search(r'DESCRIPTION:\s*(.+)', raw_response)
+    tags_match = re.search(r'TAGS:\s*(.+)', raw_response)
 
     title = title_match.group(1).strip() if title_match else ""
     description = desc_match.group(1).strip() if desc_match else ""
@@ -301,8 +562,9 @@ def _score_window_with_llm(
     metadata = LLMMetadata(title=title, description=description, tags=tags) if title else None
 
     logger.info(
-        "  LLM window at %.1fs: %.1f/10 (energy avg=%.2f peak=%.2f) | %r",
-        seed.start, float(score_match.group(1)), avg_energy, peak_energy, title,
+        "  LLM window at %.1fs: %.1f/10 (abs=%d%% of peak, %s) | %r",
+        seed.start, float(score_match.group(1)),
+        int(abs_ratio * 100), abs_energy_desc.split(" —")[0], title,
     )
 
     return llm_score, metadata
@@ -366,16 +628,23 @@ def score_segments(
     logger.info("Scorer starting — %d segment(s) to score", len(segments))
     t0 = time.time()
 
-    # Phase 1: text + audio
+    # Phase 1: text + audio + spike + burst
     text_scores = [compute_text_score(config, seg) for seg in segments]
-    audio_scores = compute_audio_score(segments, wav_path)
+    audio_scores, raw_rms = compute_audio_score_with_raw(segments, wav_path)
+    spike_scores = compute_spike_score(segments, wav_path) if config.spike_weight > 0.0 else [0.0] * len(segments)
+    burst_scores = compute_burst_score(segments, wav_path) if config.burst_weight > 0.0 else [0.0] * len(segments)
+
+    # Compute global RMS stats for absolute energy context
+    nonzero_rms = [v for v in raw_rms if v > 0.0]
+    global_rms_mean = sum(nonzero_rms) / len(nonzero_rms) if nonzero_rms else 0.0
+    global_rms_max = max(nonzero_rms) if nonzero_rms else 0.0
 
     # Phase 2: LLM on candidate windows only
     llm_scores: list[float] = [0.0] * len(segments)
     llm_metadatas: list[LLMMetadata | None] = [None] * len(segments)
 
     if config.llm_enabled and segments:
-        candidates = _build_candidate_windows(segments, text_scores, audio_scores, config)
+        candidates = _build_candidate_windows(segments, text_scores, audio_scores, config, spike_scores)
 
         logger.info(
             "Scorer LLM: %d candidate window(s) selected from %d segments "
@@ -387,7 +656,8 @@ def score_segments(
         for seed_idx, pre_score in candidates:
             try:
                 llm_score, metadata = _score_window_with_llm(
-                    config, seed_idx, segments, audio_scores
+                    config, seed_idx, segments, audio_scores, raw_rms,
+                    global_rms_mean, global_rms_max
                 )
             except LLMScoringError as exc:
                 logger.warning("LLM scoring failed for window at %.1fs: %s",
@@ -409,10 +679,10 @@ def score_segments(
 
     # Assemble ScoredSegment objects
     scored: list[ScoredSegment] = []
-    for i, (seg, text_s, audio_s, llm_s) in enumerate(
-        zip(segments, text_scores, audio_scores, llm_scores)
+    for i, (seg, text_s, audio_s, llm_s, spike_s, burst_s) in enumerate(
+        zip(segments, text_scores, audio_scores, llm_scores, spike_scores, burst_scores)
     ):
-        clip_s = combine_scores(config, text_s, audio_s, llm_s)
+        clip_s = combine_scores(config, text_s, audio_s, llm_s, spike_s, burst_s)
         scored.append(ScoredSegment(
             segment=seg,
             text_score=text_s,

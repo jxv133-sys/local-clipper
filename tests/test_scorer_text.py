@@ -126,8 +126,11 @@ def test_text_score_monotonicity(base_text: str, extra_chars: str) -> None:
     question_seg = make_segment(base_text + "?")
     assert compute_text_score(config, question_seg) >= base_score
 
-    # Append extra non-whitespace characters
-    extra_seg = make_segment(base_text + extra_chars)
+    # Append extra non-whitespace characters separated by a space so that
+    # whole-word reaction keyword matches in base_text are not broken by the
+    # appended characters (e.g. "go" + "0" → "go0" would break the "go"
+    # reaction keyword match, but "go" + " 0" → "go 0" preserves it).
+    extra_seg = make_segment(base_text + " " + extra_chars)
     assert compute_text_score(config, extra_seg) >= base_score
 
 
@@ -414,3 +417,82 @@ class TestCombineScores:
         result_low = combine_scores(config, text=0.0, audio=0.5, llm=None)
         result_high = combine_scores(config, text=1.0, audio=0.5, llm=None)
         assert math.isclose(result_low, result_high, rel_tol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Task 41: Reaction keyword tests
+# ---------------------------------------------------------------------------
+
+class TestReactionKeywords:
+    """Tests for reaction keyword scoring (task 41)."""
+
+    def test_reaction_keyword_increases_score(self) -> None:
+        """A segment with a reaction keyword scores higher than the same segment without it."""
+        config = DEFAULT_CONFIG
+        without = make_segment("that was a great play")
+        with_reaction = make_segment("oh that was a great play")
+        assert compute_text_score(config, with_reaction) > compute_text_score(config, without)
+
+    def test_reaction_keyword_scores_higher_than_regular_keyword(self) -> None:
+        """A reaction keyword scores higher than a regular keyword (reaction_weight > 2.0)."""
+        config = DEFAULT_CONFIG
+        # Use a segment with only a reaction keyword vs only a regular keyword
+        # Both segments have the same base text so the only difference is the keyword type
+        reaction_seg = make_segment("wow")
+        regular_seg = make_segment("crazy")
+        assert compute_text_score(config, reaction_seg) > compute_text_score(config, regular_seg)
+
+    def test_reaction_keyword_case_insensitive(self) -> None:
+        """Reaction keywords are matched case-insensitively."""
+        config = DEFAULT_CONFIG
+        lower = make_segment("wow that was insane")
+        upper = make_segment("WOW that was insane")
+        mixed = make_segment("WoW that was insane")
+        assert compute_text_score(config, lower) == compute_text_score(config, upper)
+        assert compute_text_score(config, lower) == compute_text_score(config, mixed)
+
+    def test_reaction_keyword_not_matched_as_substring(self) -> None:
+        """Reaction keyword 'no' should NOT match inside 'nobody' or 'know'."""
+        config = DEFAULT_CONFIG
+        # Segment with "nobody" and "know" — "no" should not match inside these
+        no_match_seg = make_segment("nobody would know that")
+        # Segment with standalone "no" — should match
+        match_seg = make_segment("no way that happened")
+        # The segment with standalone "no" should score higher
+        assert compute_text_score(config, match_seg) > compute_text_score(config, no_match_seg)
+
+    def test_reaction_keyword_no_substring_match_isolated(self) -> None:
+        """'no' embedded in words like 'nobody', 'know', 'snow' does not trigger reaction score."""
+        config = DEFAULT_CONFIG
+        # Build a config with empty regular keywords so only reaction keywords contribute
+        cfg = Config(work_dir="/tmp/test")
+        cfg.keywords = []
+        # Text with "no" only as a substring — should not match
+        seg_substring = make_segment("nobody knows the snow")
+        # Text with standalone "no" — should match
+        seg_standalone = make_segment("no")
+        assert compute_text_score(cfg, seg_standalone) > compute_text_score(cfg, seg_substring)
+
+    def test_reaction_keyword_score_normalized(self) -> None:
+        """Text score with many reaction keywords remains in [0.0, 1.0]."""
+        config = DEFAULT_CONFIG
+        # Pile on many reaction keywords
+        text = " ".join(["wow", "oh", "whoa", "no", "yes", "omg"] * 20)
+        seg = make_segment(text)
+        score = compute_text_score(config, seg)
+        assert 0.0 <= score <= 1.0
+
+    def test_reaction_weight_config_field(self) -> None:
+        """Config exposes reaction_weight and it defaults to 3.0."""
+        config = DEFAULT_CONFIG
+        assert hasattr(config, "reaction_weight")
+        assert config.reaction_weight == 3.0
+
+    def test_reaction_keywords_config_field(self) -> None:
+        """Config exposes reaction_keywords list with expected words."""
+        config = DEFAULT_CONFIG
+        assert hasattr(config, "reaction_keywords")
+        expected = {"oh", "wow", "whoa", "no", "yes", "what", "ahhh", "omg", "noo",
+                    "yoo", "bro", "wait", "stop", "go", "run", "help", "dead", "gone",
+                    "hit", "fly", "fall"}
+        assert expected.issubset(set(config.reaction_keywords))

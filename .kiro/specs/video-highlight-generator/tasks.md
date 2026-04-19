@@ -178,3 +178,57 @@ Implement a local, offline Python pipeline that extracts audio from a video, tra
 - [x] 38. Add re-run button to completed jobs in the web UI
   - Store the job's config options (whisper model, top N, keywords, etc.) in the Job object
   - "Re-run" button pre-fills the options panel with those values and re-uses the uploaded file path if it still exists
+
+---
+
+## Silent Reaction Detection (from end-to-end test analysis)
+
+The pipeline currently misses purely visual/audio moments — e.g. a streamer getting hit by a car in-game and reacting with laughter or screaming but no words. These are often the funniest clips. The root cause is that candidate selection is text-dominated: a silent reaction with a massive energy spike scores lower than a quiet segment with keywords.
+
+### Problem breakdown
+
+- `text_weight=0.35, audio_weight=0.25` in the pre-filter means audio energy is underweighted
+- RMS energy per segment is a flat average — it doesn't detect *sudden spikes* (the moment of impact)
+- Single-word reactions ("oh!", "whoa", "no!") are in the transcript but not in the keyword list
+- There is no "silence-then-burst" pattern detector
+
+### Proposed solutions
+
+- [x] 39. Add audio spike detection to candidate selection
+  - Compute a rolling baseline RMS over a 30s window before each segment
+  - Spike score = `segment_rms / baseline_rms` — a sudden burst scores much higher than sustained loudness
+  - Add `spike_score` as a fourth signal alongside text, audio, and pace
+  - A spike ratio > 3x baseline should strongly boost the candidate pre-score
+  - This catches "something just happened" moments regardless of whether anyone spoke
+
+- [x] 40. Add a separate audio-only candidate track
+  - Run two candidate selection passes before LLM scoring:
+    1. **Text+audio track** (current): top N/2 candidates by combined text+audio score
+    2. **Audio spike track**: top N/2 candidates by spike score alone, ignoring text entirely
+  - Merge the two shortlists (deduplicate by proximity), then send the combined list to the LLM
+  - This guarantees high-energy silent moments always get a shot at LLM scoring
+  - Config: `llm_audio_candidates: int = 10` (how many pure-audio slots to reserve)
+
+- [x] 41. Expand reaction keyword list with single-word exclamations
+  - Add short reaction words that Whisper reliably transcribes even from brief outbursts:
+    `"oh", "wow", "whoa", "no", "yes", "what", "ahhh", "omg", "noo", "yoo", "bro",
+     "wait", "stop", "go", "run", "help", "dead", "gone", "hit", "fly", "fall"`
+  - Weight these higher than multi-word keywords (they indicate a pure reaction moment)
+  - Add a `reaction_keywords` list to Config separate from the main `keywords` list
+  - `reaction_weight: float = 3.0` per occurrence (vs 2.0 for regular keywords)
+
+- [x] 42. Detect silence-then-burst transition pattern
+  - For each segment, compute: `silence_before = avg RMS of the 5s immediately before segment start`
+  - If `silence_before < 0.1 * global_rms_mean` AND `segment_rms > 0.5 * global_rms_max`,
+    classify as a "burst after silence" — strong highlight signal
+  - Add `burst_score: float` to the pre-filter scoring (weight: 0.3)
+  - Log detected burst moments at INFO level: `[Scorer] Burst detected at 1234.5s (silence→loud)`
+
+- [x] 43. Decouple pre-filter weights from final scoring weights
+  - Currently the same `text_weight`/`audio_weight` config values are used for both
+    candidate pre-filtering AND final clip score combination
+  - Add separate `llm_prefilter_text_weight: float = 0.2` and
+    `llm_prefilter_audio_weight: float = 0.8` config fields
+  - Pre-filter uses these (audio-heavy) to surface energetic moments
+  - Final scoring still uses `text_weight`/`audio_weight` (balanced) for clip ranking
+  - This is the simplest fix and should be implemented first
