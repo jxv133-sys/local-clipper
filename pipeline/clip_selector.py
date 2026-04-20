@@ -365,6 +365,7 @@ def select_clips(
                 score=scored_seg.clip_score,
                 rank=0,  # assigned later
                 segment_indices=included_indices,
+                is_audio_spike=scored_seg.is_audio_spike,
             )
         )
 
@@ -511,12 +512,15 @@ def _resolve_overlaps(clips: list[Clip], max_clip_duration: float) -> list[Clip]
                 merged_indices = sorted(
                     set(current.segment_indices) | set(next_clip.segment_indices)
                 )
+                # Preserve is_audio_spike if either clip was an audio spike
+                is_spike = current.is_audio_spike or next_clip.is_audio_spike
                 current = Clip(
                     start=merged_start,
                     end=merged_end,
                     score=higher_score,
                     rank=0,
                     segment_indices=merged_indices,
+                    is_audio_spike=is_spike,
                 )
             else:
                 # Cannot merge: discard lower-scoring clip

@@ -45,6 +45,7 @@ class ScoredSegment:
     llm_score: float     # [0.0, 1.0], 0.0 if LLM disabled
     clip_score: float    # weighted combination
     llm_metadata: "LLMMetadata | None" = None  # YouTube metadata, set when LLM enabled
+    is_audio_spike: bool = False  # True if selected purely for audio spikes (bypassed LLM)
 
 
 @dataclass
@@ -63,6 +64,7 @@ class Clip:
     score: float              # clip_score of the seed segment
     rank: int                 # 1-based rank by score
     segment_indices: list[int]  # indices into transcript.segments
+    is_audio_spike: bool = False  # True if this clip was selected purely for audio spikes (bypassed LLM)
 
 
 @dataclass

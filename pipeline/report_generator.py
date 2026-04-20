@@ -79,7 +79,20 @@ def generate_report(
     lines.append("WHY THIS CLIP WAS CHOSEN")
     lines.append("-" * 60)
 
-    if seed_scored:
+    # Check if this is an audio spike clip (bypassed LLM)
+    if clip.is_audio_spike:
+        lines.append("")
+        lines.append("  ⚡ AUDIO SPIKE CLIP")
+        lines.append("")
+        lines.append("  This clip was selected purely for its sudden loud audio spike.")
+        lines.append("  Audio spike clips bypass LLM scoring and are chosen based on")
+        lines.append("  dramatic increases in volume compared to the surrounding audio.")
+        lines.append("")
+        lines.append(f"  Overall Score:  {_score_bar(clip.score)}")
+        if seed_scored:
+            lines.append(f"  Audio Energy:   {_score_bar(seed_scored.audio_score)}")
+        lines.append("")
+    elif seed_scored:
         lines.append("")
         lines.append(f"  Overall Score:  {_score_bar(seed_scored.clip_score)}")
         lines.append(f"  Audio Energy:   {_score_bar(seed_scored.audio_score)}")

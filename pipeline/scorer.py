@@ -363,7 +363,7 @@ def _build_candidate_windows(
     audio_scores: list[float],
     config: Config,
     spike_scores: list[float] | None = None,
-) -> list[tuple[int, float]]:
+) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
     """Identify candidate seed indices for LLM scoring using two parallel tracks.
 
     Strategy:
@@ -385,8 +385,9 @@ def _build_candidate_windows(
     the function falls back to the original single-track behaviour.
 
     Returns:
-        List of (segment_index, pre_score) sorted by pre_score descending,
-        length <= config.llm_max_candidates.
+        Tuple of (llm_candidates, audio_spike_candidates):
+        - llm_candidates: List of (segment_index, pre_score) for LLM scoring
+        - audio_spike_candidates: List of (segment_index, pre_score) for pure audio spikes (bypass LLM)
     """
     n = len(segments)
     pre_scores = [
@@ -438,31 +439,13 @@ def _build_candidate_windows(
         # don't place spike seeds on top of text+audio seeds.
         spike_track = _pick_top(ranked_spike, audio_budget, used_times)
 
-    # --- Merge and deduplicate ---
-    # Build a combined list; if two entries are within min_spacing of each
-    # other (shouldn't happen given the shared used_times pool, but guard
-    # against floating-point edge cases), keep the one with higher pre_score.
-    merged: list[tuple[int, float]] = list(text_track) + list(spike_track)
-
-    # Deduplicate by proximity (keep higher pre_score)
-    deduped: list[tuple[int, float]] = []
-    for idx, score in merged:
-        seg_mid = (segments[idx].start + segments[idx].end) / 2.0
-        conflict = False
-        for j, (existing_idx, existing_score) in enumerate(deduped):
-            existing_mid = (segments[existing_idx].start + segments[existing_idx].end) / 2.0
-            if abs(seg_mid - existing_mid) < min_spacing:
-                # Keep the one with the higher pre_score
-                if score > existing_score:
-                    deduped[j] = (idx, score)
-                conflict = True
-                break
-        if not conflict:
-            deduped.append((idx, score))
-
-    # Sort final list by pre_score descending
-    deduped.sort(key=lambda x: x[1], reverse=True)
-    return deduped
+    # Return both tracks separately:
+    # - text_track goes to LLM scoring
+    # - spike_track bypasses LLM (pure audio spike clips)
+    text_track.sort(key=lambda x: x[1], reverse=True)
+    spike_track.sort(key=lambda x: x[1], reverse=True)
+    
+    return (text_track, spike_track)
 
 
 def _score_window_with_llm(
@@ -707,16 +690,22 @@ def score_segments(
             )
             config.llm_enabled = False  # Disable for this run
         else:
-            candidates = _build_candidate_windows(segments, text_scores, audio_scores, config, spike_scores)
+            llm_candidates, audio_spike_candidates = _build_candidate_windows(
+                segments, text_scores, audio_scores, config, spike_scores
+            )
 
             logger.info(
-                "Scorer LLM: %d candidate window(s) selected from %d segments "
-                "(spaced >= %.0fs apart, cap=%d)",
-                len(candidates), len(segments),
+                "Scorer LLM: %d candidate window(s) for LLM scoring, %d audio spike clips (bypass LLM) "
+                "from %d segments (spaced >= %.0fs apart, cap=%d)",
+                len(llm_candidates), len(audio_spike_candidates), len(segments),
                 config.min_clip_duration, config.llm_max_candidates,
             )
 
-            for seed_idx, pre_score in candidates:
+            # Track which segments are audio spikes (will bypass LLM)
+            audio_spike_indices_set = {idx for idx, _ in audio_spike_candidates}
+
+            # Score LLM candidates only (audio spikes bypass LLM)
+            for seed_idx, pre_score in llm_candidates:
                 try:
                     llm_score, metadata = _score_window_with_llm(
                         config, seed_idx, segments, audio_scores, raw_rms,
@@ -739,6 +728,8 @@ def score_segments(
                         if llm_score > llm_scores[i]:
                             llm_scores[i] = llm_score
                             llm_metadatas[i] = metadata
+    else:
+        audio_spike_indices_set = set()
 
     # Assemble ScoredSegment objects
     scored: list[ScoredSegment] = []
@@ -746,6 +737,7 @@ def score_segments(
         zip(segments, text_scores, audio_scores, llm_scores, spike_scores, burst_scores)
     ):
         clip_s = combine_scores(config, text_s, audio_s, llm_s, spike_s, burst_s)
+        is_spike = i in audio_spike_indices_set
         scored.append(ScoredSegment(
             segment=seg,
             text_score=text_s,
@@ -753,6 +745,7 @@ def score_segments(
             llm_score=llm_s,
             clip_score=clip_s,
             llm_metadata=llm_metadatas[i] if config.llm_enabled else None,
+            is_audio_spike=is_spike,
         ))
 
     elapsed = time.time() - t0
