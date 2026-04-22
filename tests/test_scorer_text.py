@@ -588,10 +588,11 @@ class TestRepetitionPenalty:
 
     def test_penalty_multiplier_applied_correctly(self) -> None:
         """Verify the exact multiplier is applied: score_with_penalty == score_without_penalty * multiplier."""
-        # Use a custom config with a known multiplier
+        # Use a custom config with a known multiplier and pattern blending disabled
         config = make_config()
         config.repetition_penalty_threshold = 0.4
         config.repetition_penalty_multiplier = 0.5
+        config.text_pattern_weight = 0.0  # disable pattern blending for exact math check
 
         # Highly repetitive text: 1 unique / 10 total = 0.1 < 0.4
         repetitive_text = "go go go go go go go go go go"
@@ -603,6 +604,7 @@ class TestRepetitionPenalty:
         config_no_penalty = make_config()
         config_no_penalty.repetition_penalty_threshold = 0.0  # never triggers
         config_no_penalty.repetition_penalty_multiplier = 0.5
+        config_no_penalty.text_pattern_weight = 0.0  # disable pattern blending
         score_without_penalty = compute_text_score(config_no_penalty, seg)
 
         # The penalized score should equal the unpenalized score * multiplier

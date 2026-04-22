@@ -322,6 +322,7 @@ class TestScoreSegments:
         )
         # Set max_candidates high enough to cover both segments
         config.llm_max_candidates = 10
+        config.hook_detection_enabled = False  # disable hook detection to isolate LLM window scoring
         segments = [
             make_segment("First.", 0.0, 1.0),
             make_segment("Second.", 2.0, 3.0),  # spaced > min_clip_duration apart? no — use small min
@@ -329,10 +330,8 @@ class TestScoreSegments:
         config.min_clip_duration = 0.5  # small so both seeds are selected
         transcript = Transcript(segments=segments)
 
-        with patch(
-            "pipeline.scorer._score_window_with_llm",
-            return_value=(0.5, None),
-        ) as mock_llm:
+        with patch("pipeline.scorer._check_llm_model_available", return_value=True), \
+             patch("pipeline.scorer._score_window_with_llm", return_value=(0.5, None)) as mock_llm:
             result = score_segments(config, transcript, wav_path)
 
         assert mock_llm.call_count >= 1  # at least one window scored
@@ -423,7 +422,8 @@ class TestBuildCandidateWindowsDualTrack:
             segments, text_scores, audio_scores, cfg, spike_scores
         )
 
-        candidate_indices = [idx for idx, _ in candidates]
+        llm_track, spike_track = candidates
+        candidate_indices = [idx for idx, _ in llm_track] + [idx for idx, _ in spike_track]
         assert 5 in candidate_indices, (
             "Segment 5 (high spike, low text) should be included via the audio track"
         )
@@ -452,7 +452,8 @@ class TestBuildCandidateWindowsDualTrack:
             segments, text_scores, audio_scores, cfg, spike_scores
         )
 
-        candidate_indices = [idx for idx, _ in candidates]
+        llm_track, spike_track = candidates
+        candidate_indices = [idx for idx, _ in llm_track] + [idx for idx, _ in spike_track]
         # Segments 4-7 have low scores on all tracks — none should appear
         for bad_idx in [4, 5, 6, 7]:
             assert bad_idx not in candidate_indices, (
@@ -484,9 +485,11 @@ class TestBuildCandidateWindowsDualTrack:
         )
 
         # Check all pairs of candidates are spaced >= min_clip_duration apart
+        llm_track, spike_track = candidates
+        all_candidates = llm_track + spike_track
         midpoints = [
             (segments[idx].start + segments[idx].end) / 2.0
-            for idx, _ in candidates
+            for idx, _ in all_candidates
         ]
         for i in range(len(midpoints)):
             for j in range(i + 1, len(midpoints)):
@@ -542,7 +545,8 @@ class TestBuildCandidateWindowsDualTrack:
             segments, text_scores, audio_scores, cfg, spike_scores
         )
 
-        candidate_indices = [idx for idx, _ in candidates]
+        llm_track, spike_track = candidates
+        candidate_indices = [idx for idx, _ in llm_track] + [idx for idx, _ in spike_track]
         # With no audio budget, segment 5 (high spike, low text) should NOT appear
         assert 5 not in candidate_indices, (
             "With llm_audio_candidates=0, spike-only segment should not be included"
@@ -580,9 +584,11 @@ class TestBuildCandidateWindowsDualTrack:
         )
 
         # Only one of the two should appear (they're within min_clip_duration)
-        assert len(candidates) == 1
+        llm_track, spike_track = candidates
+        all_candidates = llm_track + spike_track
+        assert len(all_candidates) == 1
         # seg0 has higher pre_score (0.9*0.5 + 0.9*0.5 = 0.9 vs 0.1*0.5 + 0.1*0.5 = 0.1)
-        assert candidates[0][0] == 0, "seg0 (higher pre_score) should be kept over seg1"
+        assert all_candidates[0][0] == 0, "seg0 (higher pre_score) should be kept over seg1"
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +665,8 @@ class TestPrefilterWeightDecoupling:
         candidates = _build_candidate_windows(segments, text_scores, audio_scores, cfg)
 
         # seg1 should rank first because its prefilter pre_score (0.74) > seg0 (0.26)
-        assert candidates[0][0] == 1, (
+        llm_track, _ = candidates
+        assert llm_track[0][0] == 1, (
             "seg1 (high audio, low text) should rank first with audio-heavy prefilter weights"
         )
 
@@ -682,7 +689,8 @@ class TestPrefilterWeightDecoupling:
 
         candidates = _build_candidate_windows(segments, text_scores, audio_scores, cfg)
 
-        indices = [idx for idx, _ in candidates]
+        llm_track, _ = candidates
+        indices = [idx for idx, _ in llm_track]
         # seg2 pre_score = 0.2*0.05 + 0.8*0.95 = 0.01 + 0.76 = 0.77
         # seg3 pre_score = 0.2*0.95 + 0.8*0.05 = 0.19 + 0.04 = 0.23
         assert indices.index(2) < indices.index(3), (
@@ -770,11 +778,11 @@ class TestPrefilterWeightDecoupling:
         candidates_b = _build_candidate_windows(segments, text_scores, audio_scores, cfg_b)
 
         # Audio-heavy prefilter: seg1 (high audio) should rank first
-        assert candidates_a[0][0] == 1, (
+        assert candidates_a[0][0][0] == 1, (
             "With audio-heavy prefilter, seg1 (high audio) should rank first"
         )
         # Text-heavy prefilter: seg0 (high text) should rank first
-        assert candidates_b[0][0] == 0, (
+        assert candidates_b[0][0][0] == 0, (
             "With text-heavy prefilter, seg0 (high text) should rank first"
         )
 

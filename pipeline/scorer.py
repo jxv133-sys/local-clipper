@@ -43,7 +43,13 @@ def compute_text_score(config: Config, segment: Segment) -> float:
     - pace bonus for fast speech (> 3 words/sec), indicating excitement/urgency
 
     Normalized to [0.0, 1.0] via soft-max: raw / (raw + 5.0).
+
+    When config.text_pattern_weight > 0, the heuristic pattern score from
+    text_patterns.analyze_text_patterns() is blended in:
+        final = (1 - w) * keyword_score + w * pattern_score
     """
+    from pipeline.text_patterns import analyze_text_patterns
+
     text = segment.text
     text_lower = text.lower()
     raw_score = 0.0
@@ -75,8 +81,9 @@ def compute_text_score(config: Config, segment: Segment) -> float:
             raw_score += min(1.0, (wps - 3.0) / 3.0) * 2.0
 
     if raw_score <= 0.0:
-        return 0.0
-    normalized = max(0.0, min(1.0, raw_score / (raw_score + 5.0)))
+        keyword_score = 0.0
+    else:
+        keyword_score = max(0.0, min(1.0, raw_score / (raw_score + 5.0)))
 
     # Repetition penalty: detect Whisper hallucinations and genuinely repetitive content.
     # Single-word segments cannot be repetitive, so skip them.
@@ -90,9 +97,22 @@ def compute_text_score(config: Config, segment: Segment) -> float:
                 "[Scorer] Repetition penalty applied at %.1fs (ratio=%.2f)",
                 segment.start, repetition_ratio,
             )
-            normalized *= config.repetition_penalty_multiplier
+            keyword_score *= config.repetition_penalty_multiplier
 
-    return normalized
+    # Blend in heuristic pattern score (questions, laughter, emotional words, etc.)
+    w = getattr(config, 'text_pattern_weight', 0.0)
+    if w > 0.0:
+        pattern_result = analyze_text_patterns(text)
+        normalized = (1.0 - w) * keyword_score + w * pattern_result.score
+        if pattern_result.signals:
+            logger.debug(
+                "[Scorer] Text patterns at %.1fs: %s (pattern=%.2f keyword=%.2f blended=%.2f)",
+                segment.start, pattern_result.signals,
+                pattern_result.score, keyword_score, normalized,
+            )
+        return normalized
+
+    return keyword_score
 
 
 # ---------------------------------------------------------------------------
@@ -814,12 +834,18 @@ def score_segments(
 
     Pipeline:
     1. Phase 1 — text + audio scores on ALL segments (fast, local).
-    2. Phase 2 — if LLM enabled, identify the top `llm_max_candidates`
+       - text_patterns heuristics are blended into the text score.
+    2. Hook detection (optional) — if LLM enabled and hook_detection_enabled,
+       run a sliding-window hook scan over the full transcript and apply a
+       multiplicative boost to text scores near detected hooks.
+    3. Phase 2 — if LLM enabled, identify the top `llm_max_candidates`
        candidate *windows* (spaced at least min_clip_duration apart) and
        call the LLM once per window.  The LLM score is then applied to the
        seed segment and propagated to nearby segments in the same window.
-    3. Combine scores and return.
+    4. Combine scores and return.
     """
+    from pipeline.hook_detector import detect_hooks, get_hook_score_for_window
+
     segments = transcript.segments
     logger.info("Scorer starting — %d segment(s) to score", len(segments))
     t0 = time.time()
@@ -834,6 +860,31 @@ def score_segments(
     nonzero_rms = [v for v in raw_rms if v > 0.0]
     global_rms_mean = sum(nonzero_rms) / len(nonzero_rms) if nonzero_rms else 0.0
     global_rms_max = max(nonzero_rms) if nonzero_rms else 0.0
+
+    # Hook detection: run once over the full transcript, then boost text scores
+    # multiplicatively where hooks are detected.
+    # boost formula: text_score *= (1 + hook_boost_max * hook_score), capped at 1.0
+    hook_boost_max = getattr(config, 'hook_boost_max', 0.4)
+    hook_detection_enabled = getattr(config, 'hook_detection_enabled', True)
+    if config.llm_enabled and hook_detection_enabled and segments:
+        logger.info("Scorer: running hook detection over %d segments...", len(segments))
+        hooks = detect_hooks(
+            config,
+            segments,
+            window_size=getattr(config, 'hook_window_size', 3),
+            stride=getattr(config, 'hook_stride', 2),
+            min_words=getattr(config, 'hook_min_words', 5),
+            score_threshold=getattr(config, 'hook_score_threshold', 0.4),
+        )
+        if hooks:
+            logger.info("Scorer: %d hook(s) detected — applying multiplicative boost", len(hooks))
+            for i, seg in enumerate(segments):
+                hook_score = get_hook_score_for_window(hooks, seg.start, seg.end)
+                if hook_score > 0.0:
+                    boost = 1.0 + hook_boost_max * hook_score
+                    text_scores[i] = min(1.0, text_scores[i] * boost)
+    else:
+        hooks = []
 
     # Phase 2: LLM on candidate windows only
     llm_scores: list[float] = [0.0] * len(segments)

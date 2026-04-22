@@ -141,3 +141,24 @@ class Config:
     # Excitement score weights: excitement = volume_weight × volume + pitch_weight × pitch
     excitement_volume_weight: float = 0.6
     excitement_pitch_weight: float = 0.4
+
+    # Heuristic text pattern scoring (Task 2.1)
+    # Weight blended into the final text score: final = (1 - w) * keyword_score + w * pattern_score
+    # Set to 0.0 to disable pattern scoring entirely.
+    text_pattern_weight: float = 0.3
+
+    # LLM hook detection (Task 2.3)
+    # When True and llm_enabled is True, run hook detection on the full transcript
+    # before scoring and apply a multiplicative boost to text scores.
+    hook_detection_enabled: bool = True
+    # Maximum multiplicative boost from a hook: final = base * (1 + hook_boost_max * hook_score)
+    # e.g. 0.4 means a perfect hook (score=1.0) boosts the text score by up to 40%.
+    hook_boost_max: float = 0.4
+    # Sliding window size (number of segments) for hook detection
+    hook_window_size: int = 3
+    # Stride between windows (2 = 50% overlap)
+    hook_stride: int = 2
+    # Minimum word count per window to bother calling the LLM
+    hook_min_words: int = 5
+    # Minimum hook score to record (windows below this are discarded)
+    hook_score_threshold: float = 0.4
