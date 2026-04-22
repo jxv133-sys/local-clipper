@@ -74,3 +74,19 @@ class SRTEntry:
     start: float   # seconds, relative to clip start
     end: float     # seconds, relative to clip start
     text: str
+
+
+@dataclass
+class AudioFeatures:
+    """Enhanced audio features for viral clip detection.
+    
+    All scores are normalized to [0.0, 1.0] using percentile clipping (5th-95th)
+    to prevent outliers from skewing the distribution.
+    
+    Temporal resolution: 0.5 second windows
+    """
+    time: float              # timestamp in seconds
+    volume_score: float      # RMS energy (normalized 0-1)
+    pitch_score: float       # F0 fundamental frequency (normalized 0-1)
+    excitement_score: float  # 0.6 × volume + 0.4 × pitch
+    silence_score: float     # 1.0 - volume (detects pauses)

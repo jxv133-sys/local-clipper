@@ -144,6 +144,165 @@ def compute_audio_score_with_raw(
 
 
 # ---------------------------------------------------------------------------
+# Enhanced audio feature extraction (new scoring system)
+# ---------------------------------------------------------------------------
+
+def compute_audio_features(config: Config, wav_path: str) -> list:
+    """Extract enhanced audio features for viral clip detection.
+    
+    Extracts features at config.audio_feature_window (default 0.5s) resolution:
+    - volume_score: RMS energy (normalized 0-1)
+    - pitch_score: F0 fundamental frequency (normalized 0-1)
+    - excitement_score: weighted combination (0.6 × volume + 0.4 × pitch)
+    - silence_score: 1.0 - volume (detects pauses)
+    
+    Uses percentile clipping (5th-95th) to prevent outliers from skewing scores.
+    Includes safety check for silent audio to prevent NaN values.
+    
+    Returns:
+        List of AudioFeatures objects, one per temporal window
+    """
+    from pipeline.models import AudioFeatures
+    
+    try:
+        import librosa
+    except ImportError:
+        logger.warning(
+            "librosa not installed. Enhanced audio features disabled. "
+            "Install with: pip install librosa"
+        )
+        return []
+    
+    # Load audio with librosa for pitch extraction
+    try:
+        y, sr = librosa.load(wav_path, sr=None, mono=True)
+    except Exception as exc:
+        logger.error("Failed to load audio file %s: %s", wav_path, exc)
+        return []
+    
+    # Safety check for silent audio
+    if len(y) == 0 or np.max(np.abs(y)) == 0.0:
+        logger.warning("Audio file %s is silent or empty", wav_path)
+        return []
+    
+    window_size = config.audio_feature_window
+    hop_length = int(sr * window_size)
+    
+    # Extract volume (RMS energy) per window
+    rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
+    
+    # Extract pitch (F0 fundamental frequency) per window
+    # Using pyin algorithm for better pitch tracking
+    # Adjust parameters based on audio duration to avoid frame_length issues
+    audio_duration = len(y) / sr
+    
+    # Use smaller hop_length for pitch to get better resolution
+    pitch_hop_length = max(512, min(hop_length, len(y) // 10))
+    
+    # frame_length should be at least 2048 but not larger than audio length
+    frame_length = min(2048, len(y))
+    
+    try:
+        f0, voiced_flag, voiced_probs = librosa.pyin(
+            y,
+            fmin=librosa.note_to_hz('C2'),  # ~65 Hz (low male voice)
+            fmax=librosa.note_to_hz('C7'),  # ~2093 Hz (high female voice)
+            sr=sr,
+            hop_length=pitch_hop_length,
+            frame_length=frame_length,
+        )
+        
+        # Replace NaN pitch values (unvoiced segments) with 0
+        f0 = np.nan_to_num(f0, nan=0.0)
+        
+        # If pitch was extracted at different resolution, resample to match RMS
+        if len(f0) != len(rms):
+            # Resample f0 to match rms length
+            from scipy import interpolate
+            if len(f0) > 1:
+                x_old = np.linspace(0, 1, len(f0))
+                x_new = np.linspace(0, 1, len(rms))
+                f_interp = interpolate.interp1d(x_old, f0, kind='linear', fill_value='extrapolate')
+                f0 = f_interp(x_new)
+            else:
+                f0 = np.zeros(len(rms))
+    except Exception as exc:
+        logger.warning("Pitch extraction failed for %s: %s. Using zero pitch.", wav_path, exc)
+        f0 = np.zeros(len(rms))
+    
+    # If pitch was extracted at different resolution, resample to match RMS
+    if len(f0) != len(rms):
+        # Resample f0 to match rms length
+        from scipy import interpolate
+        if len(f0) > 1:
+            x_old = np.linspace(0, 1, len(f0))
+            x_new = np.linspace(0, 1, len(rms))
+            f_interp = interpolate.interp1d(x_old, f0, kind='linear', fill_value='extrapolate')
+            f0 = f_interp(x_new)
+        else:
+            f0 = np.zeros(len(rms))
+    
+    # Ensure both arrays have the same length
+    min_len = min(len(rms), len(f0))
+    rms = rms[:min_len]
+    f0 = f0[:min_len]
+    
+    # Safety check: if all values are zero, return empty list
+    if np.max(rms) == 0.0 and np.max(f0) == 0.0:
+        logger.warning("All audio features are zero for %s", wav_path)
+        return []
+    
+    # Normalize using percentile clipping to prevent outliers
+    def normalize_with_percentiles(values: np.ndarray) -> np.ndarray:
+        """Normalize array to [0, 1] using percentile clipping."""
+        if len(values) == 0 or np.max(values) == np.min(values):
+            return np.zeros_like(values)
+        
+        p_low = np.percentile(values, config.audio_percentile_low)
+        p_high = np.percentile(values, config.audio_percentile_high)
+        
+        # Avoid division by zero
+        if p_high == p_low:
+            return np.zeros_like(values)
+        
+        clipped = np.clip(values, p_low, p_high)
+        normalized = (clipped - p_low) / (p_high - p_low)
+        return np.clip(normalized, 0.0, 1.0)
+    
+    # Normalize volume and pitch
+    volume_norm = normalize_with_percentiles(rms)
+    pitch_norm = normalize_with_percentiles(f0)
+    
+    # Compute excitement score: weighted combination
+    excitement = (
+        config.excitement_volume_weight * volume_norm +
+        config.excitement_pitch_weight * pitch_norm
+    )
+    
+    # Compute silence score: inverse of volume
+    silence = 1.0 - volume_norm
+    
+    # Build AudioFeatures objects
+    features: list[AudioFeatures] = []
+    for i in range(len(volume_norm)):
+        time = i * window_size
+        features.append(AudioFeatures(
+            time=time,
+            volume_score=float(volume_norm[i]),
+            pitch_score=float(pitch_norm[i]),
+            excitement_score=float(excitement[i]),
+            silence_score=float(silence[i]),
+        ))
+    
+    logger.info(
+        "Extracted %d audio feature windows (%.1fs resolution) from %s",
+        len(features), window_size, wav_path
+    )
+    
+    return features
+
+
+# ---------------------------------------------------------------------------
 # Phase 1: spike score (audio burst detection)
 # ---------------------------------------------------------------------------
 
@@ -679,6 +838,7 @@ def score_segments(
     # Phase 2: LLM on candidate windows only
     llm_scores: list[float] = [0.0] * len(segments)
     llm_metadatas: list[LLMMetadata | None] = [None] * len(segments)
+    audio_spike_indices_set: set[int] = set()  # Initialize here to avoid UnboundLocalError
 
     if config.llm_enabled and segments:
         # Check if LLM model is available before attempting scoring
@@ -728,8 +888,6 @@ def score_segments(
                         if llm_score > llm_scores[i]:
                             llm_scores[i] = llm_score
                             llm_metadatas[i] = metadata
-    else:
-        audio_spike_indices_set = set()
 
     # Assemble ScoredSegment objects
     scored: list[ScoredSegment] = []

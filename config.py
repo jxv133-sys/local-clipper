@@ -131,3 +131,13 @@ class Config:
 
     # Subtitles
     burn_subtitles: bool = True      # Set to False to skip burning captions into clips
+
+    # Enhanced Audio Features (new scoring system)
+    # Temporal resolution for audio feature extraction (seconds)
+    audio_feature_window: float = 0.5
+    # Percentile clipping range to prevent outliers (5th-95th percentile)
+    audio_percentile_low: float = 5.0
+    audio_percentile_high: float = 95.0
+    # Excitement score weights: excitement = volume_weight × volume + pitch_weight × pitch
+    excitement_volume_weight: float = 0.6
+    excitement_pitch_weight: float = 0.4
