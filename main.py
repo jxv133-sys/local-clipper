@@ -2,8 +2,10 @@
 
 Usage:
     python3 main.py <input_video_path> [options]
+    python3 main.py --url <youtube_url> [options]
 
 Options:
+    --url URL               Download a YouTube video and clip it automatically
     --output-dir DIR        Directory for output clips (default: <input_folder>/highlights)
     --whisper-model MODEL   Whisper model size: tiny/base/small/medium/large (default: base)
     --top-n N               Number of highlight clips to generate (default: 5)
@@ -47,6 +49,76 @@ from pipeline.report_generator import generate_report
 from pipeline.scorer import score_segments
 from pipeline.subtitle_generator import generate_subtitles
 from pipeline.transcriber import transcribe
+
+
+def download_youtube_video(url: str, output_dir: str, max_height: int = 720) -> str:
+    """Download a YouTube video using yt-dlp.
+
+    Downloads up to *max_height*p resolution (default 720p) into *output_dir*
+    and returns the path to the downloaded file. Lower resolution = much faster
+    download and processing, which is fine for highlight clip generation.
+
+    Args:
+        url: YouTube URL (any format yt-dlp accepts).
+        output_dir: Directory to save the downloaded file.
+        max_height: Maximum video height in pixels (default: 720).
+
+    Returns:
+        Absolute path to the downloaded video file.
+
+    Raises:
+        PipelineError: If yt-dlp is not installed or the download fails.
+    """
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        raise PipelineError(
+            "yt-dlp is required for YouTube downloads. "
+            "Install it with: pip install yt-dlp"
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_template = os.path.join(output_dir, "%(title)s.%(ext)s")
+
+    # Cap resolution to max_height for faster downloads
+    format_selector = (
+        f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]"
+        f"/bestvideo[height<={max_height}]+bestaudio"
+        f"/best[height<={max_height}]"
+        f"/best"
+    )
+
+    ydl_opts = {
+        "format": format_selector,
+        "outtmpl": out_template,
+        "merge_output_format": "mp4",
+        "quiet": False,
+        "no_warnings": False,
+        "noplaylist": True,   # Only download the single video, not a playlist
+    }
+
+    print(f"[YouTube] Downloading (max {max_height}p): {url}", flush=True)
+    t0 = time.time()
+
+    try:
+        import yt_dlp
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            # Resolve the actual filename yt-dlp wrote
+            filename = ydl.prepare_filename(info)
+            # yt-dlp may change the extension after merging
+            if not os.path.exists(filename):
+                base = os.path.splitext(filename)[0]
+                filename = base + ".mp4"
+            if not os.path.exists(filename):
+                raise PipelineError(f"Downloaded file not found at expected path: {filename}")
+    except yt_dlp.utils.DownloadError as exc:
+        raise PipelineError(f"YouTube download failed: {exc}") from exc
+
+    elapsed = time.time() - t0
+    size_mb = os.path.getsize(filename) / (1024 * 1024)
+    print(f"[YouTube] Downloaded in {elapsed:.1f}s — {size_mb:.1f} MB → {filename}", flush=True)
+    return filename
 
 
 def _get_video_duration(video_path: str) -> float:
@@ -157,11 +229,21 @@ def run_pipeline(video_path: str, config: Config) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate highlight clips from a video file.",
+        description="Generate highlight clips from a video file or YouTube URL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Example:\n  python3 main.py input.mp4 --top-n 3 --whisper-model small",
+        epilog=(
+            "Examples:\n"
+            "  python3 main.py input.mp4 --top-n 3 --whisper-model small\n"
+            "  python3 main.py --url https://youtu.be/gzL2xoZLg9I --top-n 5 --llm"
+        ),
     )
-    parser.add_argument("input_video", help="Path to the input video file")
+    parser.add_argument("input_video", nargs="?", default=None,
+                        help="Path to the input video file (omit when using --url)")
+    parser.add_argument("--url", default=None,
+                        help="YouTube URL to download and clip automatically")
+    parser.add_argument("--quality", type=int, default=720,
+                        choices=[360, 480, 720, 1080],
+                        help="Max video resolution for YouTube downloads (default: 720)")
     parser.add_argument("--output-dir", default=None,
                         help="Directory for output clips (default: <input_video_folder>/highlights)")
     parser.add_argument("--whisper-model", default="base",
@@ -182,6 +264,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Validate: must have either input_video or --url
+    if not args.input_video and not args.url:
+        parser.error("Provide either a video file path or --url <youtube_url>")
+    if args.input_video and args.url:
+        parser.error("Provide either a video file path or --url, not both")
+
     # Configure logging so pipeline INFO messages appear on stdout
     logging.basicConfig(
         level=logging.INFO,
@@ -191,6 +279,17 @@ def main() -> None:
 
     work_dir = tempfile.mkdtemp(prefix="highlight_")
 
+    # Handle YouTube download
+    if args.url:
+        # Download into a dedicated subfolder inside the work dir
+        download_dir = os.path.join(work_dir, "download")
+        try:
+            args.input_video = download_youtube_video(args.url, download_dir, max_height=args.quality)
+        except PipelineError as exc:
+            print(f"\nError: {exc}", file=sys.stderr)
+            shutil.rmtree(work_dir, ignore_errors=True)
+            sys.exit(1)
+
     # Default output dir: a "highlights" folder next to the input video
     if args.output_dir is None:
         input_dir = os.path.dirname(os.path.abspath(args.input_video))
@@ -198,7 +297,8 @@ def main() -> None:
 
     config = build_config(args, work_dir)
 
-    print(f"Input:      {args.input_video}")
+    print(f"Input:      {args.input_video}" + (f"  (from {args.url})" if args.url else ""))
+    print(f"Output dir: {config.output_dir}")
     print(f"Output dir: {config.output_dir}")
     print(f"Whisper:    {config.whisper_model}")
     print(f"Top N:      {config.top_n_clips}")
