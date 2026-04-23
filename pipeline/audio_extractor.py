@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -10,6 +11,39 @@ from config import Config
 from pipeline.exceptions import AudioExtractionError
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_ffmpeg_version() -> int:
+    """Detect the major version of the installed FFmpeg binary.
+
+    Runs ``ffmpeg -version`` and parses the first line for the version number.
+
+    Returns:
+        The major version as an int (e.g. ``6`` for "ffmpeg version 6.1.1").
+        Returns ``0`` if ffmpeg is not found or the version cannot be parsed.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        first_line = result.stdout.splitlines()[0] if result.stdout.strip() else ""
+        match = re.search(r"ffmpeg version (\d+)", first_line, re.IGNORECASE)
+        if match:
+            major = int(match.group(1))
+            logger.debug("[FFmpeg] Detected version %d.x", major)
+            return major
+    except (FileNotFoundError, OSError):
+        pass
+    except Exception:
+        pass
+    return 0
+
+
+# Detected at import time so all modules share a single probe.
+FFMPEG_VERSION: int = _detect_ffmpeg_version()
 
 # Phrases in FFmpeg stderr that indicate no audio track was found
 _NO_AUDIO_INDICATORS = [

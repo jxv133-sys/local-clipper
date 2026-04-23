@@ -9,6 +9,7 @@ import subprocess
 import time
 
 from config import Config
+from pipeline.audio_extractor import FFMPEG_VERSION  # noqa: F401 — used for version-specific flag selection
 from pipeline.exceptions import SubtitleError
 from pipeline.models import Clip, SRTEntry, Transcript
 

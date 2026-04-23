@@ -156,7 +156,7 @@
   - Only fall back to 0.0 after both attempts fail
 
 
-- [~] 25. FFmpeg version detection at startup
+- [x] 25. FFmpeg version detection at startup
   - Some FFmpeg flags differ between versions (e.g. `-c:s` subtitle codec options changed in 5.x)
   - Run `ffmpeg -version` once at import time in `audio_extractor.py` and parse the major version
   - Store it in a module-level `FFMPEG_VERSION: int` constant

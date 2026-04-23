@@ -209,3 +209,82 @@ class TestExtractAudioNonZeroExit:
 
                 with pytest.raises(AudioExtractionError):
                     extract_audio(config, str(video))
+
+
+# ---------------------------------------------------------------------------
+# FFmpeg version detection tests
+# ---------------------------------------------------------------------------
+
+class TestDetectFFmpegVersion:
+    """Tests for _detect_ffmpeg_version()."""
+
+    def test_parses_major_version_from_typical_output(self):
+        """Parses major version from a typical 'ffmpeg version X.Y.Z' line."""
+        from pipeline.audio_extractor import _detect_ffmpeg_version
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="ffmpeg version 6.1.1 Copyright (c) 2000-2023 the FFmpeg developers\n",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            version = _detect_ffmpeg_version()
+
+        assert version == 6
+
+    def test_parses_version_4(self):
+        """Parses major version 4 correctly."""
+        from pipeline.audio_extractor import _detect_ffmpeg_version
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="ffmpeg version 4.4.2-0ubuntu0.22.04.1\n",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            version = _detect_ffmpeg_version()
+
+        assert version == 4
+
+    def test_returns_zero_when_ffmpeg_not_found(self):
+        """Returns 0 when ffmpeg binary is not found (FileNotFoundError)."""
+        from pipeline.audio_extractor import _detect_ffmpeg_version
+
+        with patch("subprocess.run", side_effect=FileNotFoundError("ffmpeg not found")):
+            version = _detect_ffmpeg_version()
+
+        assert version == 0
+
+    def test_returns_zero_on_malformed_output(self):
+        """Returns 0 when ffmpeg output doesn't contain a parseable version."""
+        from pipeline.audio_extractor import _detect_ffmpeg_version
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="some unexpected output with no version\n",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            version = _detect_ffmpeg_version()
+
+        assert version == 0
+
+    def test_returns_zero_on_empty_output(self):
+        """Returns 0 when ffmpeg produces no stdout."""
+        from pipeline.audio_extractor import _detect_ffmpeg_version
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            version = _detect_ffmpeg_version()
+
+        assert version == 0
+
+    def test_ffmpeg_version_constant_is_int(self):
+        """FFMPEG_VERSION module constant is an integer."""
+        from pipeline.audio_extractor import FFMPEG_VERSION
+
+        assert isinstance(FFMPEG_VERSION, int)

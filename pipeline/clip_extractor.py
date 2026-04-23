@@ -9,6 +9,7 @@ import subprocess
 import time
 
 from config import Config
+from pipeline.audio_extractor import FFMPEG_VERSION  # noqa: F401 — used for version-specific flag selection
 from pipeline.exceptions import ClipExtractionError
 from pipeline.models import Clip
 
@@ -223,6 +224,10 @@ def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
 
     Raises:
         ClipExtractionError: If FFmpeg exits with a non-zero return code.
+
+    Note:
+        FFMPEG_VERSION is available for version-specific flag selection.
+        For example, subtitle codec flags (``-c:s``) changed in FFmpeg 5.x.
     """
     result = subprocess.run(
         cmd,
