@@ -92,6 +92,10 @@ class Config:
     # remaining budget is then filled backward (setup).  If the seed is near the
     # video end and there is not enough content forward, whatever is available is used.
     min_reaction_duration: float = 8.0
+    # Seconds of video to keep after the last transcript segment ends.
+    # Prevents clips from feeling cut off mid-breath by adding a natural pause
+    # after the final word.  Clamped to video_duration and max_clip_duration.
+    clip_tail_padding: float = 1.5
     # Minimum text score required for a segment to be considered for selection.
     # Segments below this threshold (and with no keywords) are skipped unless
     # there are not enough above-threshold candidates to fill top_n_clips.

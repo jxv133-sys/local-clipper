@@ -367,6 +367,14 @@ def select_clips(
                 if not expanded:
                     break
 
+        # Apply tail padding — add a short buffer after the last segment so the
+        # clip doesn't feel cut off mid-breath.  Clamped by max_clip_duration.
+        tail_padding = getattr(config, 'clip_tail_padding', 1.5)
+        if tail_padding > 0.0:
+            padded_end = clip_end + tail_padding
+            if padded_end - clip_start <= config.max_clip_duration:
+                clip_end = padded_end
+
         # Clamp to video bounds
         clip_start = max(0.0, clip_start)
         clip_end = min(video_duration, clip_end)

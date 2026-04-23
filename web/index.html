@@ -649,6 +649,10 @@
                 <label for="adv-spike-pct" title="Fraction of LLM candidate slots reserved for audio spike moments (0–1)">Audio spike %</label>
                 <input type="number" id="adv-spike-pct" value="0.2" min="0" max="1" step="0.05" />
               </div>
+              <div>
+                <label for="adv-tail-padding" title="Seconds of video kept after the last word — prevents clips feeling cut off mid-breath">Tail padding (s)</label>
+                <input type="number" id="adv-tail-padding" value="1.5" min="0" max="10" step="0.5" />
+              </div>
               <div class="full">
                 <div class="toggle-row">
                   <input type="checkbox" id="adv-subtitles" checked />
@@ -913,6 +917,7 @@ runBtn.addEventListener('click', async () => {
   fd.append('max_clip_duration', document.getElementById('adv-max-clip-dur').value);
   fd.append('min_clip_spacing',  document.getElementById('adv-min-spacing').value);
   fd.append('llm_audio_spike_percentage', document.getElementById('adv-spike-pct').value);
+  fd.append('clip_tail_padding',          document.getElementById('adv-tail-padding').value);
   fd.append('llm_audio_gate',    document.getElementById('adv-llm-audio-gate').checked ? 'true' : 'false');
   fd.append('repetition_penalty_threshold',  document.getElementById('adv-rep-threshold').value);
   fd.append('repetition_penalty_multiplier', document.getElementById('adv-rep-multiplier').value);
@@ -1347,7 +1352,7 @@ const LS_KEY = 'vhg_settings_v2';
 
 const ADV_IDS = [
   'adv-text-weight', 'adv-audio-weight', 'adv-min-text-score', 'adv-reaction-weight',
-  'adv-min-clip-dur', 'adv-max-clip-dur', 'adv-min-spacing', 'adv-spike-pct',
+  'adv-min-clip-dur', 'adv-max-clip-dur', 'adv-min-spacing', 'adv-spike-pct', 'adv-tail-padding',
   'adv-subtitles', 'adv-genre2', 'adv-platform2',
   'adv-llm-audio-gate', 'adv-rep-threshold', 'adv-rep-multiplier',
 ];

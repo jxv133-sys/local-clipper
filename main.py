@@ -167,6 +167,7 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     cfg.use_cache = not args.no_cache
     cfg.language = args.language
     cfg.trim_silence = not args.no_trim_silence
+    cfg.clip_tail_padding = args.clip_tail_padding
 
     # When LLM is enabled, give it real weight and reduce text/audio proportionally
     if cfg.llm_enabled:
@@ -279,6 +280,8 @@ def main() -> None:
                         help="Force re-transcription, ignoring any cached transcript")
     parser.add_argument("--no-trim-silence", action="store_true",
                         help="Skip trimming leading/trailing silence from extracted clips")
+    parser.add_argument("--clip-tail-padding", type=float, default=1.5,
+                        help="Seconds of video to keep after the last word in a clip (default: 1.5)")
     parser.add_argument("--language", default="auto",
                         help="Transcription language code (default: auto). E.g. 'en', 'es', 'fr'")
 

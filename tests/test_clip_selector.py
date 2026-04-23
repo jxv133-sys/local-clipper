@@ -21,6 +21,7 @@ def make_config(**kwargs) -> Config:
         top_n_clips=5,
         min_clip_duration=20.0,
         max_clip_duration=45.0,
+        clip_tail_padding=0.0,  # disable tail padding in tests unless explicitly set
     )
     defaults.update(kwargs)
     return Config(**defaults)
@@ -1423,9 +1424,9 @@ class TestAutoScaleMinClipSpacing:
         """10-minute video (600s) with top_n=5: spacing auto-scales from 300s to 100s (600/6)."""
         video_duration = 600.0  # 10 minutes
         top_n = 5
-        # 5 segments spread across the video
+        # 5 segments spread across the video, each 25s long so they meet min_clip_duration=20s
         seg_starts = [i * 100.0 for i in range(top_n)]
-        segments = self._make_segments(seg_starts)
+        segments = self._make_segments(seg_starts, duration=25.0)
         scored = [make_scored(seg, float(i + 1) / top_n) for i, seg in enumerate(segments)]
         transcript = make_transcript(segments)
         config = make_config(
@@ -1433,13 +1434,13 @@ class TestAutoScaleMinClipSpacing:
             min_clip_spacing=300.0,  # default 5 minutes
             min_clip_duration=20.0,
             max_clip_duration=45.0,
+            dedup_similarity_threshold=1.0,  # disable dedup — segments have identical text
         )
 
         # video_duration / top_n_clips = 600 / 5 = 120 < 300 → auto-scale to 600 / 6 = 100s
         clips = select_clips(config, scored, transcript, video_duration=video_duration)
 
         # With effective_spacing=100s, segments 100s apart should all be accepted
-        # (they are exactly at the boundary or beyond)
         assert len(clips) == top_n, (
             f"Expected {top_n} clips after auto-scaling spacing to 100s, got {len(clips)}"
         )
@@ -1448,9 +1449,9 @@ class TestAutoScaleMinClipSpacing:
         """Long video (3600s) with top_n=5: spacing should NOT auto-scale (3600/5=720 > 300)."""
         video_duration = 3600.0  # 1 hour
         top_n = 5
-        # 5 segments spread 700s apart (well beyond 300s spacing)
+        # 5 segments spread 700s apart, each 25s long so they meet min_clip_duration=20s
         seg_starts = [i * 700.0 for i in range(top_n)]
-        segments = self._make_segments(seg_starts)
+        segments = self._make_segments(seg_starts, duration=25.0)
         scored = [make_scored(seg, float(i + 1) / top_n) for i, seg in enumerate(segments)]
         transcript = make_transcript(segments)
         config = make_config(
@@ -1458,6 +1459,7 @@ class TestAutoScaleMinClipSpacing:
             min_clip_spacing=300.0,
             min_clip_duration=20.0,
             max_clip_duration=45.0,
+            dedup_similarity_threshold=1.0,  # disable dedup — segments have identical text
         )
 
         # video_duration / top_n_clips = 3600 / 5 = 720 > 300 → no auto-scaling

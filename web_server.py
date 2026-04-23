@@ -488,6 +488,7 @@ def create_job():
     adv_llm_audio_gate    = _bool_field("llm_audio_gate", True)
     adv_rep_threshold     = _float("repetition_penalty_threshold", 0.4)
     adv_rep_multiplier    = _float("repetition_penalty_multiplier", 0.5)
+    adv_tail_padding      = _float("clip_tail_padding", 1.5)
 
     # Build config
     work_dir = tempfile.mkdtemp(prefix="highlight_web_")
@@ -514,6 +515,7 @@ def create_job():
     cfg.llm_audio_gate = adv_llm_audio_gate
     cfg.repetition_penalty_threshold = adv_rep_threshold
     cfg.repetition_penalty_multiplier = adv_rep_multiplier
+    cfg.clip_tail_padding = adv_tail_padding
 
     if keywords_raw.strip():
         cfg.keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
