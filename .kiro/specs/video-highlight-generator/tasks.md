@@ -111,7 +111,7 @@
   - Invalidate the cache only when the model name changes between jobs
   - Log: `[Transcriber] Using cached model (skipping reload)`
 
-- [~] 16. Skip subtitle burning when no segments overlap the clip
+- [x] 16. Skip subtitle burning when no segments overlap the clip
   - `generate_subtitles` runs an FFmpeg subtitle-burn pass even when a clip has zero overlapping transcript segments
   - Check segment overlap before invoking FFmpeg; if no segments overlap, copy the clip file as-is
   - Log: `[SubtitleGenerator] Clip #N has no transcript segments — skipping subtitle burn`

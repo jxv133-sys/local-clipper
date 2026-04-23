@@ -205,11 +205,18 @@ def generate_subtitles(
 
         # 3. Optionally burn subtitles into the clip
         if config.burn_subtitles:
-            burned_path = base + "_subtitled.mp4"
-            _burn_subtitles(raw_path, srt_path, burned_path)
-            os.replace(burned_path, raw_path)
-            logger.info("  Clip #%d: %d subtitle entry(ies) burned, output: %s (%.1fs)",
-                        clip.rank, len(srt_entries), raw_path, time.time() - t0)
+            if not srt_entries:
+                logger.info(
+                    "[SubtitleGenerator] Clip #%d has no transcript segments — skipping subtitle burn",
+                    clip.rank,
+                )
+                # No overlapping segments — raw clip is already the final output; nothing to do
+            else:
+                burned_path = base + "_subtitled.mp4"
+                _burn_subtitles(raw_path, srt_path, burned_path)
+                os.replace(burned_path, raw_path)
+                logger.info("  Clip #%d: %d subtitle entry(ies) burned, output: %s (%.1fs)",
+                            clip.rank, len(srt_entries), raw_path, time.time() - t0)
         else:
             logger.info("  Clip #%d: %d subtitle entry(ies) written to SRT (burn disabled), output: %s (%.1fs)",
                         clip.rank, len(srt_entries), raw_path, time.time() - t0)

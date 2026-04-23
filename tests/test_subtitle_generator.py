@@ -411,6 +411,47 @@ class TestGenerateSubtitles:
         assert len(parsed) == 1
         assert parsed[0].text == "Inside clip"
 
+    def test_no_overlapping_segments_skips_ffmpeg_burn(self, tmp_path) -> None:
+        """When burn_subtitles=True but no segments overlap the clip, FFmpeg is not called."""
+        config = make_config(tmp_path)
+        config.burn_subtitles = True
+        os.makedirs(config.output_dir, exist_ok=True)
+
+        clip = make_clip(start=50.0, end=80.0, rank=3)
+        # All segments are outside the clip window
+        segments = [
+            make_segment(0.0, 10.0, "Before"),
+            make_segment(90.0, 100.0, "After"),
+        ]
+        transcript = Transcript(segments=segments)
+
+        raw_path = os.path.join(config.output_dir, "clip_3_50s.mp4")
+        open(raw_path, "w").close()
+
+        with patch("pipeline.subtitle_generator._burn_subtitles") as mock_burn:
+            generate_subtitles(config, [clip], transcript, [raw_path])
+
+        mock_burn.assert_not_called()
+
+    def test_overlapping_segments_still_burns(self, tmp_path) -> None:
+        """When burn_subtitles=True and segments overlap the clip, FFmpeg burn is called."""
+        config = make_config(tmp_path)
+        config.burn_subtitles = True
+        os.makedirs(config.output_dir, exist_ok=True)
+
+        clip = make_clip(start=50.0, end=80.0, rank=2)
+        segments = [make_segment(55.0, 65.0, "Inside clip")]
+        transcript = Transcript(segments=segments)
+
+        raw_path = os.path.join(config.output_dir, "clip_2_50s.mp4")
+        open(raw_path, "w").close()
+
+        with patch("pipeline.subtitle_generator._burn_subtitles") as mock_burn, \
+             patch("os.replace"):
+            generate_subtitles(config, [clip], transcript, [raw_path])
+
+        mock_burn.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Word-level subtitle tests
