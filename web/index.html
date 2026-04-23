@@ -480,13 +480,45 @@
       <!-- Upload -->
       <div>
         <div class="section-title">Input Video</div>
-        <div id="drop-zone" role="button" tabindex="0" aria-label="Drop video file or click to browse">
-          <div class="drop-icon">📁</div>
-          <p><strong>Drag &amp; drop</strong> a video here</p>
-          <p>or click to browse</p>
-          <input type="file" id="file-input" accept="video/*,.mp4,.mov,.avi,.mkv,.m4v" />
+
+        <!-- Tab switcher -->
+        <div style="display:flex;gap:0;margin-bottom:10px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+          <button id="tab-file" onclick="switchInputTab('file')"
+            style="flex:1;padding:7px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:0.8rem;font-weight:600;transition:background 0.15s">
+            📁 File Upload
+          </button>
+          <button id="tab-url" onclick="switchInputTab('url')"
+            style="flex:1;padding:7px;background:var(--bg);color:var(--dim);border:none;cursor:pointer;font-size:0.8rem;font-weight:600;transition:background 0.15s">
+            ▶ YouTube URL
+          </button>
         </div>
-        <div id="selected-file"></div>
+
+        <!-- File upload panel -->
+        <div id="panel-file">
+          <div id="drop-zone" role="button" tabindex="0" aria-label="Drop video file or click to browse">
+            <div class="drop-icon">📁</div>
+            <p><strong>Drag &amp; drop</strong> a video here</p>
+            <p>or click to browse</p>
+            <input type="file" id="file-input" accept="video/*,.mp4,.mov,.avi,.mkv,.m4v" />
+          </div>
+          <div id="selected-file"></div>
+        </div>
+
+        <!-- YouTube URL panel -->
+        <div id="panel-url" style="display:none">
+          <input type="text" id="yt-url-input" placeholder="https://www.youtube.com/watch?v=..."
+            style="width:100%;margin-bottom:8px" />
+          <div style="display:flex;align-items:center;gap:8px">
+            <label for="yt-quality" style="white-space:nowrap;margin:0;font-size:0.78rem;color:var(--dim)">Quality</label>
+            <select id="yt-quality" style="flex:1">
+              <option value="360">360p (fastest)</option>
+              <option value="480">480p</option>
+              <option value="720" selected>720p (recommended)</option>
+              <option value="1080">1080p</option>
+            </select>
+          </div>
+          <div id="yt-url-status" style="font-size:0.75rem;color:var(--dim);margin-top:6px;min-height:1.2em"></div>
+        </div>
       </div>
 
       <!-- Options -->
@@ -763,6 +795,47 @@ let activeJobId  = null;       // Currently displayed job
 let activeSSE    = null;       // Active EventSource
 let jobs         = {};         // job_id -> job summary object
 let pollInterval = null;
+let inputTab     = 'file';     // 'file' | 'url'
+
+/* ================================================================
+   Input tab switcher
+   ================================================================ */
+function switchInputTab(tab) {
+  inputTab = tab;
+  const filePanel = document.getElementById('panel-file');
+  const urlPanel  = document.getElementById('panel-url');
+  const tabFile   = document.getElementById('tab-file');
+  const tabUrl    = document.getElementById('tab-url');
+
+  if (tab === 'file') {
+    filePanel.style.display = '';
+    urlPanel.style.display  = 'none';
+    tabFile.style.background = 'var(--accent)';
+    tabFile.style.color      = '#fff';
+    tabUrl.style.background  = 'var(--bg)';
+    tabUrl.style.color       = 'var(--dim)';
+    // Re-evaluate run button
+    runBtn.disabled = !selectedFile && !reuseVideoPath;
+  } else {
+    filePanel.style.display = 'none';
+    urlPanel.style.display  = '';
+    tabFile.style.background = 'var(--bg)';
+    tabFile.style.color      = 'var(--dim)';
+    tabUrl.style.background  = 'var(--accent)';
+    tabUrl.style.color       = '#fff';
+    // Enable run button if URL is already filled
+    const url = document.getElementById('yt-url-input').value.trim();
+    runBtn.disabled = !url;
+  }
+}
+
+// Enable run button when URL is typed
+document.getElementById('yt-url-input').addEventListener('input', function() {
+  if (inputTab === 'url') {
+    runBtn.disabled = !this.value.trim();
+    document.getElementById('yt-url-status').textContent = '';
+  }
+});
 
 /* ================================================================
    Drop zone
@@ -887,6 +960,60 @@ if (llmCheck.checked && !useTextInput) {
    Submit job
    ================================================================ */
 runBtn.addEventListener('click', async () => {
+  if (inputTab === 'url') {
+    const ytUrl = document.getElementById('yt-url-input').value.trim();
+    if (!ytUrl) return;
+
+    runBtn.disabled = true;
+    runBtn.textContent = '⏳ Submitting…';
+    document.getElementById('yt-url-status').textContent = 'Submitting — download will start on the server…';
+    document.getElementById('yt-url-status').style.color = 'var(--accent2)';
+
+    const fd = new FormData();
+    fd.append('youtube_url', ytUrl);
+    fd.append('youtube_quality', document.getElementById('yt-quality').value);
+    fd.append('whisper_model', document.getElementById('opt-whisper').value);
+    fd.append('top_n',         document.getElementById('opt-topn').value);
+    fd.append('keywords',      document.getElementById('opt-keywords').value);
+    fd.append('llm_enabled',   llmCheck.checked ? 'true' : 'false');
+    fd.append('llm_model',     useTextInput ? llmModelText.value : llmModelSelect.value);
+    fd.append('output_dir',    document.getElementById('opt-outdir').value);
+    fd.append('burn_subtitles', document.getElementById('opt-subtitles').checked ? 'true' : 'false');
+    fd.append('genre',         document.getElementById('opt-genre').value);
+    fd.append('platform',      document.getElementById('opt-platform').value);
+    fd.append('language',      document.getElementById('opt-language').value);
+    fd.append('text_weight',       document.getElementById('adv-text-weight').value);
+    fd.append('audio_weight',      document.getElementById('adv-audio-weight').value);
+    fd.append('min_text_score',    document.getElementById('adv-min-text-score').value);
+    fd.append('reaction_weight',   document.getElementById('adv-reaction-weight').value);
+    fd.append('min_clip_duration', document.getElementById('adv-min-clip-dur').value);
+    fd.append('max_clip_duration', document.getElementById('adv-max-clip-dur').value);
+    fd.append('min_clip_spacing',  document.getElementById('adv-min-spacing').value);
+    fd.append('llm_audio_spike_percentage', document.getElementById('adv-spike-pct').value);
+    fd.append('clip_tail_padding',          document.getElementById('adv-tail-padding').value);
+    fd.append('llm_audio_gate',    document.getElementById('adv-llm-audio-gate').checked ? 'true' : 'false');
+    fd.append('repetition_penalty_threshold',  document.getElementById('adv-rep-threshold').value);
+    fd.append('repetition_penalty_multiplier', document.getElementById('adv-rep-multiplier').value);
+
+    try {
+      const res = await fetch('/api/jobs', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Submission failed');
+
+      document.getElementById('yt-url-status').textContent = '';
+      runBtn.textContent = '▶ Generate Highlights';
+      runBtn.disabled = false;
+      await refreshJobs();
+      selectJob(data.job_id);
+    } catch (err) {
+      document.getElementById('yt-url-status').textContent = 'Error: ' + err.message;
+      document.getElementById('yt-url-status').style.color = 'var(--error)';
+      runBtn.textContent = '▶ Generate Highlights';
+      runBtn.disabled = false;
+    }
+    return;
+  }
+
   if (!selectedFile && !reuseVideoPath) return;
 
   runBtn.disabled = true;

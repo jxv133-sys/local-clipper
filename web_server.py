@@ -49,6 +49,7 @@ import zipfile
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from config import Config
+from main import download_youtube_video
 from pipeline.audio_extractor import extract_audio
 from pipeline.clip_extractor import extract_clips, generate_thumbnail
 from pipeline.clip_selector import select_clips
@@ -431,14 +432,28 @@ def get_job(job_id: str):
 
 @app.route("/api/jobs", methods=["POST"])
 def create_job():
-    """Accept a video upload and enqueue a new pipeline job."""
+    """Accept a video upload (or YouTube URL) and enqueue a new pipeline job."""
     reuse_video_path = request.form.get("reuse_video_path", "").strip()
+    youtube_url = request.form.get("youtube_url", "").strip()
 
     if reuse_video_path:
         # Re-run path: use an existing server-side file instead of uploading
         if not os.path.exists(reuse_video_path):
             return jsonify({"error": "Original video file no longer exists on the server"}), 400
         upload_path = Path(reuse_video_path)
+    elif youtube_url:
+        # YouTube download path
+        try:
+            quality = int(request.form.get("youtube_quality", "720"))
+        except (ValueError, TypeError):
+            quality = 720
+        try:
+            downloaded = download_youtube_video(youtube_url, str(UPLOADS_DIR), max_height=quality)
+            upload_path = Path(downloaded)
+        except PipelineError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": f"YouTube download failed: {exc}"}), 400
     else:
         if "video" not in request.files:
             return jsonify({"error": "No video file provided"}), 400
@@ -548,6 +563,7 @@ def create_job():
         "platform": platform,
         "language": language,
         "original_video_path": str(upload_path),
+        "youtube_url": youtube_url,
     }
     _register_job(job)
 
