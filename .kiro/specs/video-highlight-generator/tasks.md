@@ -162,6 +162,43 @@
   - Store it in a module-level `FFMPEG_VERSION: int` constant
   - Use it to select the correct flag variants in `clip_extractor.py` and `subtitle_generator.py`
 
-- [~] 26. Run full test using short footage
+- [x] 26. Run full test using short footage
 -anylise output for improvments and add and to this tasks.md file
 -use short footage at /Users/jonahvaira/Desktop/test-footage/short-footage.mov
+
+
+## Post-Run Analysis (from short-footage.mov test)
+
+- [ ] 27. Fix subtitle word-group minimum duration
+  - Word-level subtitle entries can be as short as 0.2s (e.g. "two." at 00:00:01,180→00:00:01,380) — too fast to read
+  - Enforce a minimum entry duration of 0.5s: if a word group ends before `start + 0.5s`, extend the end time to `start + 0.5s`
+  - Cap the extension so it doesn't overlap the next entry's start time
+  - Add unit tests verifying the minimum duration constraint
+
+- [ ] 28. Human-readable clip filenames
+  - Current pattern `clip_1_639s.mp4` is not readable at a glance
+  - Change to `clip_1_10m39s.mp4` format (minutes + seconds)
+  - Update `_extract_single_clip` in `clip_extractor.py` to format the start time as `{m}m{s:02d}s`
+  - Update the filename pattern in `generate_thumbnail` to match
+  - Add unit tests for the new naming format
+
+- [ ] 29. Scoring progress indicator in CLI
+  - The CLI shows a Whisper progress bar but the scoring stage is silent — for long videos with many segments this can feel frozen
+  - Print a simple one-line progress update every 10% of segments scored: `[Scorer] Scoring segments... 50/312`
+  - No need for a full progress bar — just a periodic log line is enough
+
+- [ ] 30. Enforce minimum subtitle entry duration
+  - Related to task 27 but at the SRT serialization level: any SRTEntry with `end - start < 0.4s` should have its end extended to `start + 0.4s`
+  - Apply this in `serialize_srt` before writing, capped to avoid overlapping the next entry
+  - Add a unit test: entry with 0.1s duration gets extended to 0.4s
+
+- [ ] 31. Show auto-scaled spacing in CLI stdout
+  - `[ClipSelector] Auto-scaled min_clip_spacing` is only emitted as a logger.info message, which only appears when logging is configured
+  - Also print it directly to stdout via `print()` so CLI users always see it
+  - Format: `[ClipSelector] Auto-scaled clip spacing: 300s → 100s (video too short for default)`
+
+- [ ] 32. Add --output-name-format CLI flag
+  - Allow users to choose between `seconds` (current: `clip_1_639s.mp4`) and `timestamp` (new: `clip_1_10m39s.mp4`) formats
+  - Add `output_name_format: str = "timestamp"` to `Config` (default to the new readable format)
+  - Expose as `--output-name-format seconds|timestamp` CLI flag
+  - Update web UI to always use timestamp format
