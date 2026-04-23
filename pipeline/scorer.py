@@ -625,16 +625,30 @@ def _check_llm_model_available(config: Config) -> bool:
         )
         return True
 
-    # Parse the model list and check for a prefix match (strips :tag suffix)
+    # Parse the model list and check for a match
     try:
         data = response.json()
         models = data.get("models", [])
-        configured_model = config.llm_model.split(":")[0]  # strip tag suffix
+        configured_model = config.llm_model  # e.g. "llama3.2:1b" or "llama3"
+        configured_base = configured_model.split(":")[0]
+        configured_tag  = configured_model.split(":")[1] if ":" in configured_model else None
+
         for entry in models:
             name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
-            if name.split(":")[0] == configured_model:
-                logger.debug("LLM model %r found in Ollama tags", config.llm_model)
-                return True
+            entry_base = name.split(":")[0]
+            entry_tag  = name.split(":")[1] if ":" in name else None
+
+            if configured_tag:
+                # Exact match required when a specific tag is requested
+                if entry_base == configured_base and entry_tag == configured_tag:
+                    logger.debug("LLM model %r found in Ollama tags", config.llm_model)
+                    return True
+            else:
+                # No tag specified — match any variant of the base name
+                if entry_base == configured_base:
+                    logger.debug("LLM model %r found in Ollama tags", config.llm_model)
+                    return True
+
         logger.warning(
             "LLM model %r not found in Ollama model list at %s. "
             "Run: ollama pull %s",

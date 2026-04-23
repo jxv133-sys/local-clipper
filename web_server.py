@@ -713,15 +713,18 @@ def list_ollama_models():
     try:
         data = response.json()
         raw_models = data.get("models", [])
-        # Strip :tag suffix for cleaner display (e.g. "llama3:latest" → "llama3")
+        # Keep full name but strip ":latest" only (it's redundant noise).
+        # Other tags like ":1b", ":7b-instruct" are meaningful and must be preserved.
         models = []
         seen = set()
         for entry in raw_models:
             name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
-            short = name.split(":")[0]
-            if short and short not in seen:
-                seen.add(short)
-                models.append(short)
+            # Only strip the tag if it's literally ":latest"
+            if name.endswith(":latest"):
+                name = name[: -len(":latest")]
+            if name and name not in seen:
+                seen.add(name)
+                models.append(name)
         return jsonify({"models": models, "error": None})
     except Exception as exc:
         return jsonify({"error": f"Failed to parse Ollama response: {exc}", "models": []}), 200
