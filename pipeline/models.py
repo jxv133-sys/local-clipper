@@ -5,11 +5,20 @@ from typing import Any
 
 
 @dataclass
+class WordTimestamp:
+    """A single word with its start and end timestamps."""
+    word: str
+    start: float  # seconds
+    end: float    # seconds
+
+
+@dataclass
 class Segment:
     """A single transcript segment with timing and text."""
     start: float   # seconds
     end: float     # seconds
     text: str
+    words: list[WordTimestamp] = field(default_factory=list)
 
 
 @dataclass
@@ -21,7 +30,15 @@ class Transcript:
         """Serialize the Transcript to a JSON-compatible dictionary."""
         return {
             "segments": [
-                {"start": seg.start, "end": seg.end, "text": seg.text}
+                {
+                    "start": seg.start,
+                    "end": seg.end,
+                    "text": seg.text,
+                    "words": [
+                        {"word": w.word, "start": w.start, "end": w.end}
+                        for w in seg.words
+                    ],
+                }
                 for seg in self.segments
             ]
         }
@@ -29,10 +46,15 @@ class Transcript:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Transcript":
         """Deserialize a Transcript from a dictionary."""
-        segments = [
-            Segment(start=s["start"], end=s["end"], text=s["text"])
-            for s in data.get("segments", [])
-        ]
+        segments = []
+        for s in data.get("segments", []):
+            words = [
+                WordTimestamp(word=w["word"], start=w["start"], end=w["end"])
+                for w in s.get("words", [])
+            ]
+            segments.append(
+                Segment(start=s["start"], end=s["end"], text=s["text"], words=words)
+            )
         return cls(segments=segments)
 
 

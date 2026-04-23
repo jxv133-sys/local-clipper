@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import queue
 import shutil
-import ssl
 import sys
 import tempfile
 import threading
@@ -156,7 +155,7 @@ def run_pipeline_thread(video_path: str, config: Config, msg_queue: queue.Queue)
         t0 = time.time()
         report_paths: list[str] = []
         for clip, clip_path in zip(clips, final_paths):
-            rp = generate_report(clip, scored_segments, transcript, clip_path)
+            rp = generate_report(clip, scored_segments, transcript, clip_path, config)
             report_paths.append(rp)
         stage_done("ReportGenerator", time.time() - t0)
 

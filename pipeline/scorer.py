@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import requests
@@ -129,14 +129,22 @@ def compute_audio_score(segments: list[Segment], wav_path: str) -> list[float]:
 
 
 def compute_audio_score_with_raw(
-    segments: list[Segment], wav_path: str
+    segments: list[Segment],
+    wav_path: str,
+    wav_data: tuple[int, np.ndarray] | None = None,
 ) -> tuple[list[float], list[float]]:
     """Return (normalized_scores, raw_rms_values) for all segments.
 
     normalized_scores: each value in [0.0, 1.0] relative to the loudest segment.
     raw_rms_values: absolute RMS amplitude in [0.0, ~1.0] for float32 audio.
+
+    If wav_data is provided as (sample_rate, data), it is used directly and
+    wav_path is not read from disk (avoids duplicate I/O).
     """
-    sample_rate, data = scipy.io.wavfile.read(wav_path)
+    if wav_data is not None:
+        sample_rate, data = wav_data
+    else:
+        sample_rate, data = scipy.io.wavfile.read(wav_path)
 
     if data.ndim == 2:
         data = data.mean(axis=1)
@@ -250,18 +258,6 @@ def compute_audio_features(config: Config, wav_path: str) -> list:
         logger.warning("Pitch extraction failed for %s: %s. Using zero pitch.", wav_path, exc)
         f0 = np.zeros(len(rms))
     
-    # If pitch was extracted at different resolution, resample to match RMS
-    if len(f0) != len(rms):
-        # Resample f0 to match rms length
-        from scipy import interpolate
-        if len(f0) > 1:
-            x_old = np.linspace(0, 1, len(f0))
-            x_new = np.linspace(0, 1, len(rms))
-            f_interp = interpolate.interp1d(x_old, f0, kind='linear', fill_value='extrapolate')
-            f0 = f_interp(x_new)
-        else:
-            f0 = np.zeros(len(rms))
-    
     # Ensure both arrays have the same length
     min_len = min(len(rms), len(f0))
     rms = rms[:min_len]
@@ -293,10 +289,11 @@ def compute_audio_features(config: Config, wav_path: str) -> list:
     volume_norm = normalize_with_percentiles(rms)
     pitch_norm = normalize_with_percentiles(f0)
     
-    # Compute excitement score: weighted combination
-    excitement = (
+    # Compute excitement score: weighted combination, clamped to [0, 1]
+    excitement = np.clip(
         config.excitement_volume_weight * volume_norm +
-        config.excitement_pitch_weight * pitch_norm
+        config.excitement_pitch_weight * pitch_norm,
+        0.0, 1.0,
     )
     
     # Compute silence score: inverse of volume
@@ -330,7 +327,11 @@ _SPIKE_BASELINE_WINDOW_SECONDS = 30.0  # rolling baseline window before each seg
 _SPIKE_STRONG_RATIO = 3.0              # ratio at which spike_score saturates near 1.0
 
 
-def compute_spike_score(segments: list[Segment], wav_path: str) -> list[float]:
+def compute_spike_score(
+    segments: list[Segment],
+    wav_path: str,
+    wav_data: tuple[int, np.ndarray] | None = None,
+) -> list[float]:
     """Compute a spike score for each segment based on sudden audio energy bursts.
 
     Algorithm:
@@ -344,12 +345,18 @@ def compute_spike_score(segments: list[Segment], wav_path: str) -> list[float]:
       the spike_score is 1.0 (silence-then-burst is a strong signal).
     - If both baseline and segment are silent, spike_score is 0.0.
 
+    If wav_data is provided as (sample_rate, data), it is used directly and
+    wav_path is not read from disk (avoids duplicate I/O).
+
     Returns a list of floats in [0.0, 1.0], one per segment.
     """
     if not segments:
         return []
 
-    sample_rate, data = scipy.io.wavfile.read(wav_path)
+    if wav_data is not None:
+        sample_rate, data = wav_data
+    else:
+        sample_rate, data = scipy.io.wavfile.read(wav_path)
 
     if data.ndim == 2:
         data = data.mean(axis=1)
@@ -398,7 +405,11 @@ def compute_spike_score(segments: list[Segment], wav_path: str) -> list[float]:
 _BURST_PRE_WINDOW_SECONDS = 5.0  # seconds of audio to examine before segment start
 
 
-def compute_burst_score(segments: list[Segment], wav_path: str) -> list[float]:
+def compute_burst_score(
+    segments: list[Segment],
+    wav_path: str,
+    wav_data: tuple[int, np.ndarray] | None = None,
+) -> list[float]:
     """Detect the "silence → loud" transition pattern for each segment.
 
     Algorithm:
@@ -413,12 +424,18 @@ def compute_burst_score(segments: list[Segment], wav_path: str) -> list[float]:
        d. Otherwise: burst_score = 0.0
     3. Log each detected burst at INFO level.
 
+    If wav_data is provided as (sample_rate, data), it is used directly and
+    wav_path is not read from disk (avoids duplicate I/O).
+
     Returns a list of floats (each 0.0 or 1.0), one per segment.
     """
     if not segments:
         return []
 
-    sample_rate, data = scipy.io.wavfile.read(wav_path)
+    if wav_data is not None:
+        sample_rate, data = wav_data
+    else:
+        sample_rate, data = scipy.io.wavfile.read(wav_path)
 
     if data.ndim == 2:
         data = data.mean(axis=1)
@@ -556,18 +573,66 @@ def _call_llm(config: Config, prompt: str) -> str:
 
 
 def _check_llm_model_available(config: Config) -> bool:
-    """Check if the configured LLM model is available and responding."""
+    """Check if the configured LLM model is available via a lightweight HTTP probe.
+
+    Derives the base URL from config.llm_endpoint by stripping the ``/api/generate``
+    path suffix, then issues a GET to ``<base_url>/api/tags`` (Ollama's model list
+    endpoint) with a short 3-second timeout.
+
+    - 200 response: parse the JSON and check whether config.llm_model appears in
+      the model names list.  The tag suffix (e.g. ``:latest``) is stripped before
+      comparing so ``llama3`` matches ``llama3:latest``.
+    - Non-200 response or any request error (connection refused, timeout, etc.):
+      assume the model is available (graceful fallback for non-Ollama endpoints).
+    """
+    # Derive base URL: strip /api/generate (or any trailing path) to get host:port
+    endpoint = config.llm_endpoint.rstrip("/")
+    if endpoint.endswith("/api/generate"):
+        base_url = endpoint[: -len("/api/generate")]
+    else:
+        # Unknown endpoint format — fall back to assuming available
+        logger.debug(
+            "LLM endpoint %r does not end with /api/generate; skipping availability probe",
+            config.llm_endpoint,
+        )
+        return True
+
+    tags_url = f"{base_url}/api/tags"
     try:
-        # Try a simple prompt to test model availability
-        test_prompt = "Respond with 'OK' if you can understand this message."
-        payload = {"model": config.llm_model, "prompt": test_prompt, "stream": False}
-        response = requests.post(config.llm_endpoint, json=payload, timeout=30)
-        response_data = response.json()
-        response_text = str(response_data.get("response", "")).strip()
-        return bool(response_text and response_text.lower() != "failed")
+        response = requests.get(tags_url, timeout=3)
     except Exception as exc:
-        logger.warning("LLM model availability check failed: %s", exc)
+        # Connection error, timeout, etc. — assume available (graceful fallback)
+        logger.debug("LLM availability probe failed (%s); assuming model is available", exc)
+        return True
+
+    if response.status_code != 200:
+        # Non-Ollama endpoint or server error — assume available
+        logger.debug(
+            "LLM availability probe returned HTTP %d; assuming model is available",
+            response.status_code,
+        )
+        return True
+
+    # Parse the model list and check for a prefix match (strips :tag suffix)
+    try:
+        data = response.json()
+        models = data.get("models", [])
+        configured_model = config.llm_model.split(":")[0]  # strip tag suffix
+        for entry in models:
+            name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
+            if name.split(":")[0] == configured_model:
+                logger.debug("LLM model %r found in Ollama tags", config.llm_model)
+                return True
+        logger.warning(
+            "LLM model %r not found in Ollama model list at %s. "
+            "Run: ollama pull %s",
+            config.llm_model, tags_url, config.llm_model,
+        )
         return False
+    except Exception as exc:
+        # Malformed JSON or unexpected structure — assume available
+        logger.debug("Failed to parse Ollama tags response (%s); assuming model is available", exc)
+        return True
 
 
 def _build_candidate_windows(
@@ -819,37 +884,6 @@ def _score_window_with_llm(
 
     return llm_score, metadata
 
-    raw = _call_llm(config, prompt)
-
-    score_match = re.search(r'SCORE:\s*(10|[1-9])', raw)
-    if score_match is None:
-        logger.warning(
-            "LLM returned no parseable SCORE for window at %.1fs; defaulting to 0.0. "
-            "Response: %r",
-            seed.start, raw[:300],
-        )
-        return 0.0, None
-
-    llm_score = float(score_match.group(1)) / 10.0
-
-    title_match = re.search(r'TITLE:\s*(.+)', raw)
-    desc_match = re.search(r'DESCRIPTION:\s*(.+)', raw)
-    tags_match = re.search(r'TAGS:\s*(.+)', raw)
-
-    title = title_match.group(1).strip() if title_match else ""
-    description = desc_match.group(1).strip() if desc_match else ""
-    tags_raw = tags_match.group(1).strip() if tags_match else ""
-    tags = [t.strip() for t in tags_raw.split() if t.strip().startswith("#")]
-
-    metadata = LLMMetadata(title=title, description=description, tags=tags) if title else None
-
-    logger.info(
-        "  LLM window at %.1fs: %.1f/10 | %r",
-        seed.start, float(score_match.group(1)), title,
-    )
-
-    return llm_score, metadata
-
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -863,6 +897,7 @@ def score_segments(
     config: Config,
     transcript: Transcript,
     wav_path: str,
+    llm_progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> list[ScoredSegment]:
     """Score every segment in *transcript* and return a ScoredSegment list.
 
@@ -895,9 +930,15 @@ def score_segments(
 
     # Phase 1: text + audio + spike + burst
     text_scores = [compute_text_score(config, seg) for seg in segments]
-    audio_scores, raw_rms = compute_audio_score_with_raw(segments, wav_path)
-    spike_scores = compute_spike_score(segments, wav_path) if config.spike_weight > 0.0 else [0.0] * len(segments)
-    burst_scores = compute_burst_score(segments, wav_path) if config.burst_weight > 0.0 else [0.0] * len(segments)
+    # Load WAV once and reuse across all audio scoring functions (avoids 3× disk reads)
+    try:
+        _wav_data: tuple[int, np.ndarray] | None = scipy.io.wavfile.read(wav_path)
+    except Exception as exc:
+        logger.warning("Failed to pre-load WAV file %s: %s — falling back to per-call reads", wav_path, exc)
+        _wav_data = None
+    audio_scores, raw_rms = compute_audio_score_with_raw(segments, wav_path, wav_data=_wav_data)
+    spike_scores = compute_spike_score(segments, wav_path, wav_data=_wav_data) if config.spike_weight > 0.0 else [0.0] * len(segments)
+    burst_scores = compute_burst_score(segments, wav_path, wav_data=_wav_data) if config.burst_weight > 0.0 else [0.0] * len(segments)
 
     # Compute global RMS stats for absolute energy context
     nonzero_rms = [v for v in raw_rms if v > 0.0]
@@ -974,7 +1015,8 @@ def score_segments(
             audio_spike_indices_set = {idx for idx, _ in audio_spike_candidates}
 
             # Score LLM candidates only (audio spikes bypass LLM)
-            for seed_idx, pre_score in llm_candidates:
+            total_llm = len(llm_candidates)
+            for llm_idx, (seed_idx, pre_score) in enumerate(llm_candidates):
                 try:
                     llm_score, metadata = _score_window_with_llm(
                         config, seed_idx, segments, audio_scores, raw_rms,
@@ -984,6 +1026,9 @@ def score_segments(
                     logger.warning("LLM scoring failed for window at %.1fs: %s",
                                    segments[seed_idx].start, exc)
                     llm_score, metadata = 0.0, None
+
+                if llm_progress_callback is not None:
+                    llm_progress_callback(llm_idx + 1, total_llm)
 
                 # Apply the LLM score to the seed and all segments within the
                 # same window (within half a clip-length).  This means nearby
@@ -997,6 +1042,10 @@ def score_segments(
                         if llm_score > llm_scores[i]:
                             llm_scores[i] = llm_score
                             llm_metadatas[i] = metadata
+
+            # Signal completion after all candidates are scored
+            if llm_progress_callback is not None and total_llm > 0:
+                llm_progress_callback(total_llm, total_llm)
 
     # Assemble ScoredSegment objects
     scored: list[ScoredSegment] = []

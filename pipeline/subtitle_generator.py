@@ -100,6 +100,43 @@ def parse_srt(srt_content: str) -> list[SRTEntry]:
 
 
 # ---------------------------------------------------------------------------
+# Word-level subtitle helpers
+# ---------------------------------------------------------------------------
+
+_WORDS_PER_GROUP = 4  # group words into short phrases for readability
+
+
+def _word_level_entries(seg, clip_start: float, start_index: int) -> list[SRTEntry]:
+    """Split a segment into SRT entries grouped by word boundaries.
+
+    Groups words into phrases of up to _WORDS_PER_GROUP words each.
+    Timestamps are adjusted to be relative to clip_start.
+
+    Args:
+        seg: Segment with a non-empty .words list.
+        clip_start: Absolute start time of the clip (seconds).
+        start_index: 1-based SRT index for the first entry produced.
+
+    Returns:
+        List of SRTEntry objects, one per word group.
+    """
+    entries: list[SRTEntry] = []
+    words = seg.words
+    idx = start_index
+    i = 0
+    while i < len(words):
+        group = words[i : i + _WORDS_PER_GROUP]
+        group_text = "".join(w.word for w in group).strip()
+        if group_text:
+            rel_start = max(0.0, group[0].start - clip_start)
+            rel_end = max(0.0, group[-1].end - clip_start)
+            entries.append(SRTEntry(index=idx, start=rel_start, end=rel_end, text=group_text))
+            idx += 1
+        i += _WORDS_PER_GROUP
+    return entries
+
+
+# ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
 
@@ -146,12 +183,19 @@ def generate_subtitles(
             # Include segment if it overlaps with the clip window
             if seg.end <= clip.start or seg.start >= clip.end:
                 continue
-            rel_start = max(0.0, seg.start - clip.start)
-            rel_end = max(0.0, seg.end - clip.start)
-            srt_entries.append(
-                SRTEntry(index=entry_index, start=rel_start, end=rel_end, text=seg.text.strip())
-            )
-            entry_index += 1
+            if seg.words:
+                # Word-level splitting: group into short phrases
+                new_entries = _word_level_entries(seg, clip.start, entry_index)
+                srt_entries.extend(new_entries)
+                entry_index += len(new_entries)
+            else:
+                # Fallback: segment-level entry (openai-whisper path)
+                rel_start = max(0.0, seg.start - clip.start)
+                rel_end = max(0.0, seg.end - clip.start)
+                srt_entries.append(
+                    SRTEntry(index=entry_index, start=rel_start, end=rel_end, text=seg.text.strip())
+                )
+                entry_index += 1
 
         # 2. Write SRT file alongside the clip
         base = os.path.splitext(raw_path)[0]

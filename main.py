@@ -21,7 +21,6 @@ import argparse
 import logging
 import os
 import shutil
-import ssl
 import sys
 import tempfile
 import time
@@ -165,6 +164,8 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     if args.keywords:
         cfg.keywords = args.keywords
     cfg.burn_subtitles = not args.no_subtitles
+    cfg.use_cache = not args.no_cache
+    cfg.language = args.language
 
     # When LLM is enabled, give it real weight and reduce text/audio proportionally
     if cfg.llm_enabled:
@@ -232,7 +233,7 @@ def run_pipeline(video_path: str, config: Config) -> list[str]:
     print("[ReportGenerator] Writing selection reports...", flush=True)
     report_paths: list[str] = []
     for clip, clip_path in zip(clips, final_paths):
-        report_path = generate_report(clip, scored_segments, transcript, clip_path)
+        report_path = generate_report(clip, scored_segments, transcript, clip_path, config)
         report_paths.append(report_path)
     print(f"[ReportGenerator] Done — {len(report_paths)} report(s) written", flush=True)
 
@@ -273,6 +274,10 @@ def main() -> None:
                         help="Keywords that boost segment scores")
     parser.add_argument("--no-subtitles", action="store_true",
                         help="Skip burning subtitles into clips (SRT files are still written)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Force re-transcription, ignoring any cached transcript")
+    parser.add_argument("--language", default="auto",
+                        help="Transcription language code (default: auto). E.g. 'en', 'es', 'fr'")
 
     args = parser.parse_args()
 

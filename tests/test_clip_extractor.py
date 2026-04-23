@@ -230,3 +230,107 @@ class TestFFmpegFailure:
 
         assert result == []
         mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# generate_thumbnail tests
+# ---------------------------------------------------------------------------
+
+class TestGenerateThumbnail:
+    """Tests for generate_thumbnail()."""
+
+    from pipeline.clip_extractor import generate_thumbnail
+
+    def test_returns_thumb_path_on_success(self, tmp_path):
+        """Returns the thumbnail path when ffprobe and ffmpeg both succeed."""
+        from pipeline.clip_extractor import generate_thumbnail
+
+        clip_path = str(tmp_path / "clip_1_10s.mp4")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                completed(0, stdout="20.0\n"),  # ffprobe duration
+                completed(0),                   # ffmpeg thumbnail
+            ]
+            result = generate_thumbnail(clip_path)
+
+        assert result == str(tmp_path / "clip_1_10s_thumb.jpg")
+
+    def test_thumbnail_saved_alongside_clip(self, tmp_path):
+        """Thumbnail path uses <clip_stem>_thumb.jpg naming."""
+        from pipeline.clip_extractor import generate_thumbnail
+
+        clip_path = str(tmp_path / "clip_2_60s.mp4")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                completed(0, stdout="30.0\n"),
+                completed(0),
+            ]
+            result = generate_thumbnail(clip_path)
+
+        assert result is not None
+        assert result.endswith("clip_2_60s_thumb.jpg")
+        assert os.path.dirname(result) == str(tmp_path)
+
+    def test_midpoint_passed_to_ffmpeg(self, tmp_path):
+        """ffmpeg -ss is called with the midpoint (duration / 2)."""
+        from pipeline.clip_extractor import generate_thumbnail
+
+        clip_path = str(tmp_path / "clip_1_0s.mp4")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                completed(0, stdout="40.0\n"),  # duration = 40s → mid = 20.0
+                completed(0),
+            ]
+            generate_thumbnail(clip_path)
+
+        ffmpeg_cmd = mock_run.call_args_list[1][0][0]
+        assert "-ss" in ffmpeg_cmd
+        ss_idx = ffmpeg_cmd.index("-ss")
+        assert float(ffmpeg_cmd[ss_idx + 1]) == 20.0
+
+    def test_falls_back_to_1s_when_ffprobe_fails(self, tmp_path):
+        """Falls back to 1.0s midpoint when ffprobe returns non-zero."""
+        from pipeline.clip_extractor import generate_thumbnail
+
+        clip_path = str(tmp_path / "clip_1_0s.mp4")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                completed(1, stderr="ffprobe error"),  # ffprobe fails
+                completed(0),                          # ffmpeg still runs
+            ]
+            result = generate_thumbnail(clip_path)
+
+        assert result is not None
+        ffmpeg_cmd = mock_run.call_args_list[1][0][0]
+        ss_idx = ffmpeg_cmd.index("-ss")
+        assert float(ffmpeg_cmd[ss_idx + 1]) == 1.0
+
+    def test_returns_none_when_ffmpeg_fails(self, tmp_path):
+        """Returns None (non-fatal) when ffmpeg thumbnail extraction fails."""
+        from pipeline.clip_extractor import generate_thumbnail
+
+        clip_path = str(tmp_path / "clip_1_0s.mp4")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                completed(0, stdout="20.0\n"),
+                completed(1, stderr="ffmpeg error"),
+            ]
+            result = generate_thumbnail(clip_path)
+
+        assert result is None
+
+    def test_returns_none_on_unexpected_exception(self, tmp_path):
+        """Returns None (non-fatal) when an unexpected exception occurs."""
+        from pipeline.clip_extractor import generate_thumbnail
+
+        clip_path = str(tmp_path / "clip_1_0s.mp4")
+
+        with patch("subprocess.run", side_effect=OSError("no ffmpeg")):
+            result = generate_thumbnail(clip_path)
+
+        assert result is None

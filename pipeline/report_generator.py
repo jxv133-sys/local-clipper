@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
+from config import Config
 from pipeline.models import Clip, LLMMetadata, ScoredSegment, Transcript
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def generate_report(
     scored_segments: list[ScoredSegment],
     transcript: Transcript,
     clip_path: str,
+    config: Config | None = None,
 ) -> str:
     """Write a 'why chosen' report alongside a clip and return the report path.
 
@@ -44,6 +46,7 @@ def generate_report(
         scored_segments: All scored segments from the pipeline.
         transcript: The full transcript.
         clip_path: Path to the exported clip .mp4 file.
+        config: Pipeline configuration (used for keyword detection).
 
     Returns:
         Path to the written .txt report file.
@@ -128,12 +131,13 @@ def generate_report(
             reasons.append("• Engaging speech detected")
 
         # Check for keywords in the clip text
-        from config import Config  # avoid circular import at module level
-        # We don't have config here, so scan for common highlight words
-        highlight_words = [
-            "crazy", "important", "watch this", "incredible", "unbelievable",
-            "amazing", "insane", "wow", "no way", "seriously", "actually",
-        ]
+        if config is not None:
+            highlight_words = config.keywords
+        else:
+            highlight_words = [
+                "crazy", "important", "watch this", "incredible", "unbelievable",
+                "amazing", "insane", "wow", "no way", "seriously", "actually",
+            ]
         found_keywords = [kw for kw in highlight_words if kw.lower() in clip_text.lower()]
         if found_keywords:
             reasons.append(f"• Keyword(s) detected: {', '.join(found_keywords)}")

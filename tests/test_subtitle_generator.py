@@ -20,8 +20,9 @@ from hypothesis import strategies as st
 
 from config import Config
 from pipeline.exceptions import SubtitleError
-from pipeline.models import Clip, Segment, SRTEntry, Transcript
+from pipeline.models import Clip, Segment, SRTEntry, Transcript, WordTimestamp
 from pipeline.subtitle_generator import (
+    _word_level_entries,
     generate_subtitles,
     parse_srt,
     serialize_srt,
@@ -409,3 +410,144 @@ class TestGenerateSubtitles:
         parsed = parse_srt(content)
         assert len(parsed) == 1
         assert parsed[0].text == "Inside clip"
+
+
+# ---------------------------------------------------------------------------
+# Word-level subtitle tests
+# ---------------------------------------------------------------------------
+
+def make_segment_with_words(start: float, end: float, words: list[tuple[str, float, float]]) -> Segment:
+    """Build a Segment with WordTimestamp entries."""
+    word_ts = [WordTimestamp(word=w, start=s, end=e) for w, s, e in words]
+    text = "".join(w for w, _, _ in words).strip()
+    return Segment(start=start, end=end, text=text, words=word_ts)
+
+
+class TestWordLevelEntries:
+    """Unit tests for _word_level_entries helper."""
+
+    def test_single_word_produces_one_entry(self) -> None:
+        """A segment with one word produces exactly one SRT entry."""
+        seg = make_segment_with_words(10.0, 11.0, [(" Hello", 10.0, 11.0)])
+        entries = _word_level_entries(seg, clip_start=0.0, start_index=1)
+        assert len(entries) == 1
+        assert entries[0].text == "Hello"
+        assert math.isclose(entries[0].start, 10.0, abs_tol=0.001)
+        assert math.isclose(entries[0].end, 11.0, abs_tol=0.001)
+
+    def test_timestamps_relative_to_clip_start(self) -> None:
+        """Word timestamps are adjusted relative to clip_start."""
+        seg = make_segment_with_words(15.0, 17.0, [(" word", 15.0, 16.0), (" two", 16.0, 17.0)])
+        entries = _word_level_entries(seg, clip_start=10.0, start_index=1)
+        assert len(entries) == 1  # 2 words fit in one group of 4
+        assert math.isclose(entries[0].start, 5.0, abs_tol=0.001)
+        assert math.isclose(entries[0].end, 7.0, abs_tol=0.001)
+
+    def test_groups_of_four_words(self) -> None:
+        """Words are grouped into phrases of up to 4 words."""
+        words = [(" w1", 0.0, 0.5), (" w2", 0.5, 1.0), (" w3", 1.0, 1.5),
+                 (" w4", 1.5, 2.0), (" w5", 2.0, 2.5)]
+        seg = make_segment_with_words(0.0, 2.5, words)
+        entries = _word_level_entries(seg, clip_start=0.0, start_index=1)
+        assert len(entries) == 2  # 4 words + 1 word
+        assert entries[0].index == 1
+        assert entries[1].index == 2
+
+    def test_index_increments_correctly(self) -> None:
+        """SRT indices start at start_index and increment per group."""
+        words = [(" a", 0.0, 0.25), (" b", 0.25, 0.5), (" c", 0.5, 0.75),
+                 (" d", 0.75, 1.0), (" e", 1.0, 1.25)]
+        seg = make_segment_with_words(0.0, 1.25, words)
+        entries = _word_level_entries(seg, clip_start=0.0, start_index=5)
+        assert entries[0].index == 5
+        assert entries[1].index == 6
+
+    def test_no_negative_timestamps(self) -> None:
+        """Timestamps are clamped to >= 0 even when clip_start > word start."""
+        seg = make_segment_with_words(5.0, 6.0, [(" word", 5.0, 6.0)])
+        entries = _word_level_entries(seg, clip_start=10.0, start_index=1)
+        assert len(entries) == 1
+        assert entries[0].start >= 0.0
+        assert entries[0].end >= 0.0
+
+
+class TestGenerateSubtitlesWordLevel:
+    """Tests for generate_subtitles with word-level timestamps."""
+
+    def test_word_level_segment_produces_multiple_entries(self, tmp_path) -> None:
+        """A segment with word timestamps produces multiple SRT entries (one per group)."""
+        config = make_config(tmp_path)
+        os.makedirs(config.output_dir, exist_ok=True)
+
+        clip = make_clip(start=0.0, end=30.0)
+        words = [(" Hello", 1.0, 1.5), (" world", 1.5, 2.0),
+                 (" this", 2.0, 2.5), (" is", 2.5, 3.0),
+                 (" great", 3.0, 3.5)]
+        seg = make_segment_with_words(1.0, 3.5, words)
+        transcript = Transcript(segments=[seg])
+
+        raw_path = os.path.join(config.output_dir, "clip_1_0s.mp4")
+        open(raw_path, "w").close()
+
+        with patch("subprocess.run", return_value=completed(0)), \
+             patch("os.replace"):
+            generate_subtitles(config, [clip], transcript, [raw_path])
+
+        srt_path = os.path.join(config.output_dir, "clip_1_0s.srt")
+        with open(srt_path, encoding="utf-8") as fh:
+            content = fh.read()
+
+        parsed = parse_srt(content)
+        # 5 words → group of 4 + group of 1 = 2 entries
+        assert len(parsed) == 2
+
+    def test_segment_without_words_falls_back_to_segment_level(self, tmp_path) -> None:
+        """A segment without word timestamps falls back to a single SRT entry."""
+        config = make_config(tmp_path)
+        os.makedirs(config.output_dir, exist_ok=True)
+
+        clip = make_clip(start=0.0, end=30.0)
+        seg = Segment(start=1.0, end=5.0, text="Hello world")  # no words
+        transcript = Transcript(segments=[seg])
+
+        raw_path = os.path.join(config.output_dir, "clip_1_0s.mp4")
+        open(raw_path, "w").close()
+
+        with patch("subprocess.run", return_value=completed(0)), \
+             patch("os.replace"):
+            generate_subtitles(config, [clip], transcript, [raw_path])
+
+        srt_path = os.path.join(config.output_dir, "clip_1_0s.srt")
+        with open(srt_path, encoding="utf-8") as fh:
+            content = fh.read()
+
+        parsed = parse_srt(content)
+        assert len(parsed) == 1
+        assert parsed[0].text == "Hello world"
+
+    def test_mixed_segments_word_and_fallback(self, tmp_path) -> None:
+        """Mix of word-level and segment-level segments both appear in SRT."""
+        config = make_config(tmp_path)
+        os.makedirs(config.output_dir, exist_ok=True)
+
+        clip = make_clip(start=0.0, end=30.0)
+        seg_with_words = make_segment_with_words(1.0, 3.0, [(" Hi", 1.0, 2.0), (" there", 2.0, 3.0)])
+        seg_no_words = Segment(start=5.0, end=8.0, text="Fallback text")
+        transcript = Transcript(segments=[seg_with_words, seg_no_words])
+
+        raw_path = os.path.join(config.output_dir, "clip_1_0s.mp4")
+        open(raw_path, "w").close()
+
+        with patch("subprocess.run", return_value=completed(0)), \
+             patch("os.replace"):
+            generate_subtitles(config, [clip], transcript, [raw_path])
+
+        srt_path = os.path.join(config.output_dir, "clip_1_0s.srt")
+        with open(srt_path, encoding="utf-8") as fh:
+            content = fh.read()
+
+        parsed = parse_srt(content)
+        # 2 words in one group + 1 fallback entry = 2 entries
+        assert len(parsed) == 2
+        texts = [e.text for e in parsed]
+        assert any("Fallback text" in t for t in texts)

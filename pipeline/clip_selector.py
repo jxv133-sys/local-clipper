@@ -207,6 +207,16 @@ def select_clips(
                 len(scored_segments), video_duration)
     t0 = time.time()
 
+    # Auto-scale min_clip_spacing for short videos.
+    # If the video is too short to space clips by the default spacing, scale down.
+    effective_spacing = config.min_clip_spacing
+    if config.top_n_clips > 0 and video_duration / config.top_n_clips < config.min_clip_spacing:
+        effective_spacing = video_duration / (config.top_n_clips + 1)
+        logger.info(
+            "[ClipSelector] Auto-scaled min_clip_spacing from %ds to %ds (video too short)",
+            int(config.min_clip_spacing), int(effective_spacing),
+        )
+
     if not scored_segments:
         return []
 
@@ -395,12 +405,17 @@ def select_clips(
         clips = _resolve_overlaps(clips, config.max_clip_duration)
 
     # Step 7: Greedy spacing pass — ensure clips are spread across the video.
+    # (deduplication runs after spacing — see Step 7b below)
     # Sort by score descending; accept a clip only if its start time is at least
     # min_clip_spacing seconds away from every already-accepted clip.
     # If the strict pass yields fewer than top_n_clips, fill remaining slots from
     # the rejected candidates in score order (fallback).
     # This runs AFTER LLM boundary refinement so refined clips respect spacing.
-    clips = _apply_spacing(clips, config.min_clip_spacing, config.top_n_clips)
+    clips = _apply_spacing(clips, effective_spacing, config.top_n_clips)
+
+    # Step 7b: Transcript deduplication pass — remove clips with near-identical
+    # transcript content (Jaccard similarity > dedup_similarity_threshold).
+    clips = _dedup_by_transcript(clips, transcript, config.dedup_similarity_threshold)
 
     # Step 8: Assign 1-based rank by score (descending)
     clips_by_score = sorted(clips, key=lambda c: c.score, reverse=True)
@@ -419,6 +434,74 @@ def select_clips(
         )
 
     return result
+
+
+def _clip_word_set(clip: Clip, transcript: Transcript) -> set[str]:
+    """Return the set of lowercase words from all transcript segments that overlap with *clip*."""
+    words: set[str] = set()
+    for seg in transcript.segments:
+        if seg.end > clip.start and seg.start < clip.end:
+            for word in seg.text.lower().split():
+                words.add(word)
+    return words
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    """Jaccard similarity between two word sets. Returns 0.0 when both are empty."""
+    union = a | b
+    if not union:
+        return 0.0
+    return len(a & b) / len(union)
+
+
+def _dedup_by_transcript(
+    clips: list[Clip],
+    transcript: Transcript,
+    threshold: float,
+) -> list[Clip]:
+    """Remove clips whose transcript content is near-identical to a higher-scoring clip.
+
+    For each pair of clips, compute Jaccard similarity on their transcript word
+    sets.  If similarity > *threshold*, discard the lower-scoring clip.
+
+    Args:
+        clips: List of Clip objects (any order).
+        transcript: Full transcript used to collect overlapping segment text.
+        threshold: Jaccard similarity above which a clip is considered a duplicate.
+
+    Returns:
+        Deduplicated list of Clip objects (order preserved from input).
+    """
+    if not clips or threshold >= 1.0:
+        return clips
+
+    # Sort by score descending so we always keep the higher-scoring clip
+    by_score = sorted(clips, key=lambda c: c.score, reverse=True)
+
+    # Pre-compute word sets
+    word_sets = [_clip_word_set(clip, transcript) for clip in by_score]
+
+    kept_indices: list[int] = []
+    removed: set[int] = set()
+
+    for i, clip in enumerate(by_score):
+        if i in removed:
+            continue
+        for j in kept_indices:
+            sim = _jaccard(word_sets[i], word_sets[j])
+            if sim > threshold:
+                logger.info(
+                    "[ClipSelector] Clip at %.1fs removed (transcript similarity %.2f to clip at %.1fs)",
+                    clip.start,
+                    sim,
+                    by_score[j].start,
+                )
+                removed.add(i)
+                break
+        if i not in removed:
+            kept_indices.append(i)
+
+    return [by_score[i] for i in kept_indices]
 
 
 def _apply_spacing(clips: list[Clip], min_spacing: float, top_n: int) -> list[Clip]:
@@ -451,7 +534,7 @@ def _apply_spacing(clips: list[Clip], min_spacing: float, top_n: int) -> list[Cl
 
     for clip in by_score:
         too_close = any(
-            abs(clip.start - acc.start) < min_spacing
+            abs(clip.start - acc.start) <= min_spacing
             for acc in accepted
         )
         if too_close:

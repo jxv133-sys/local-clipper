@@ -187,6 +187,7 @@
     .dot-running { background: var(--warning); animation: pulse 1s infinite; }
     .dot-done    { background: var(--success); }
     .dot-failed  { background: var(--error); }
+    .dot-cancelled { background: var(--dim); }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; }
@@ -205,6 +206,21 @@
     .badge-running { background: rgba(250,179,135,0.2); color: var(--warning); }
     .badge-done    { background: rgba(166,227,161,0.2); color: var(--success); }
     .badge-failed  { background: rgba(243,139,168,0.2); color: var(--error); }
+    .badge-cancelled { background: var(--border); color: var(--dim); }
+
+    .btn-cancel {
+      font-size: 0.68rem;
+      padding: 2px 8px;
+      border: 1px solid var(--error);
+      border-radius: 10px;
+      background: transparent;
+      color: var(--error);
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .btn-cancel:hover { background: var(--error); color: #fff; }
 
     .btn-rerun {
       font-size: 0.68rem;
@@ -261,6 +277,32 @@
       width: 0%;
       background: var(--accent);
       border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    /* ── LLM mini progress bar ────────────────────────────────────── */
+    #llm-progress-container {
+      display: none;
+      margin-top: 8px;
+      margin-bottom: 4px;
+    }
+    #llm-progress-label {
+      font-size: 0.72rem;
+      color: var(--warning);
+      margin-bottom: 3px;
+    }
+    #llm-progress-bar-container {
+      width: 100%;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #llm-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--warning);
+      border-radius: 2px;
       transition: width 0.3s ease;
     }
 
@@ -363,6 +405,48 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
+    /* ── Advanced settings collapsible sections ──────────────────── */
+    .adv-section {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .adv-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 10px;
+      background: var(--bg);
+      cursor: pointer;
+      user-select: none;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--dim);
+    }
+    .adv-section-header:hover { color: var(--text); }
+    .adv-section-header .adv-chevron { transition: transform 0.2s; font-size: 0.65rem; }
+    .adv-section-header.open .adv-chevron { transform: rotate(90deg); }
+    .adv-section-body {
+      display: none;
+      padding: 10px;
+      background: var(--surface2);
+    }
+    .adv-section-body.open { display: block; }
+
+    /* ── Slider rows ──────────────────────────────────────────────── */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .slider-row label { margin: 0; flex: 1; font-size: 0.78rem; color: var(--dim); }
+    .slider-row input[type="range"] { flex: 1.5; accent-color: var(--accent); }
+    .slider-val { font-size: 0.75rem; color: var(--accent2); min-width: 32px; text-align: right; }
+
+    /* ── Tooltip ──────────────────────────────────────────────────── */
+    [title] { cursor: help; }
+
     /* ── Responsive ───────────────────────────────────────────────── */
     @media (max-width: 700px) {
       .main { grid-template-columns: 1fr; }
@@ -439,6 +523,21 @@
           </div>
 
           <div>
+            <label for="opt-language">Language</label>
+            <select id="opt-language">
+              <option value="auto" selected>Auto-detect</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="zh">Chinese</option>
+              <option value="pt">Portuguese</option>
+            </select>
+          </div>
+
+          <div>
             <label for="opt-platform">Platform</label>
             <select id="opt-platform">
               <option value="none" selected>No constraint</option>
@@ -481,6 +580,120 @@
         </div>
       </div>
 
+      <!-- Advanced settings -->
+      <div>
+        <div class="section-title">Advanced Settings</div>
+
+        <!-- Scoring section -->
+        <div class="adv-section" style="margin-bottom:8px">
+          <div class="adv-section-header" onclick="toggleAdv('scoring')">
+            📊 Scoring <span class="adv-chevron" id="chevron-scoring">▶</span>
+          </div>
+          <div class="adv-section-body" id="body-scoring">
+            <div class="options-grid">
+              <div class="full">
+                <div class="slider-row">
+                  <label for="adv-text-weight" title="Weight given to text/keyword signals in the final clip score">Text weight</label>
+                  <input type="range" id="adv-text-weight" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('val-text-weight').textContent=parseFloat(this.value).toFixed(2)" />
+                  <span class="slider-val" id="val-text-weight">0.50</span>
+                </div>
+                <div class="slider-row">
+                  <label for="adv-audio-weight" title="Weight given to audio energy signals in the final clip score">Audio weight</label>
+                  <input type="range" id="adv-audio-weight" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('val-audio-weight').textContent=parseFloat(this.value).toFixed(2)" />
+                  <span class="slider-val" id="val-audio-weight">0.50</span>
+                </div>
+                <div class="slider-row">
+                  <label for="adv-min-text-score" title="Segments with text score below this threshold are deprioritised">Min text score</label>
+                  <input type="range" id="adv-min-text-score" min="0" max="0.5" step="0.01" value="0.05" oninput="document.getElementById('val-min-text-score').textContent=parseFloat(this.value).toFixed(2)" />
+                  <span class="slider-val" id="val-min-text-score">0.05</span>
+                </div>
+                <div class="slider-row">
+                  <label for="adv-reaction-weight" title="Score bonus per reaction keyword (e.g. 'wow', 'no', 'go')">Reaction weight</label>
+                  <input type="range" id="adv-reaction-weight" min="0" max="10" step="0.5" value="3" oninput="document.getElementById('val-reaction-weight').textContent=parseFloat(this.value).toFixed(1)" />
+                  <span class="slider-val" id="val-reaction-weight">3.0</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Clips section -->
+        <div class="adv-section" style="margin-bottom:8px">
+          <div class="adv-section-header" onclick="toggleAdv('clips')">
+            ✂️ Clips <span class="adv-chevron" id="chevron-clips">▶</span>
+          </div>
+          <div class="adv-section-body" id="body-clips">
+            <div class="options-grid">
+              <div>
+                <label for="adv-min-clip-dur" title="Minimum clip duration in seconds">Min clip duration (s)</label>
+                <input type="number" id="adv-min-clip-dur" value="30" min="5" max="120" />
+              </div>
+              <div>
+                <label for="adv-max-clip-dur" title="Maximum clip duration in seconds">Max clip duration (s)</label>
+                <input type="number" id="adv-max-clip-dur" value="100" min="10" max="300" />
+              </div>
+              <div>
+                <label for="adv-min-spacing" title="Minimum gap between selected clips (seconds)">Min clip spacing (s)</label>
+                <input type="number" id="adv-min-spacing" value="300" min="0" max="3600" />
+              </div>
+              <div>
+                <label for="adv-spike-pct" title="Fraction of LLM candidate slots reserved for audio spike moments (0–1)">Audio spike %</label>
+                <input type="number" id="adv-spike-pct" value="0.2" min="0" max="1" step="0.05" />
+              </div>
+              <div class="full">
+                <div class="toggle-row">
+                  <input type="checkbox" id="adv-subtitles" checked />
+                  <label for="adv-subtitles" style="margin:0" title="Burn subtitle text into the exported clip video">Burn subtitles into clips</label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Advanced section -->
+        <div class="adv-section">
+          <div class="adv-section-header" onclick="toggleAdv('advanced')">
+            ⚙️ Advanced <span class="adv-chevron" id="chevron-advanced">▶</span>
+          </div>
+          <div class="adv-section-body" id="body-advanced">
+            <div class="options-grid">
+              <div>
+                <label for="adv-genre2" title="Content genre — affects scoring weight balance">Genre</label>
+                <select id="adv-genre2">
+                  <option value="auto" selected>Auto-detect</option>
+                  <option value="gaming">Gaming</option>
+                  <option value="podcast">Podcast</option>
+                  <option value="comedy">Comedy</option>
+                </select>
+              </div>
+              <div>
+                <label for="adv-platform2" title="Target platform — constrains clip length">Platform</label>
+                <select id="adv-platform2">
+                  <option value="none" selected>No constraint</option>
+                  <option value="shorts">YouTube Shorts (≤60s)</option>
+                  <option value="tiktok">TikTok (≤60s)</option>
+                  <option value="reels">Instagram Reels (≤90s)</option>
+                </select>
+              </div>
+              <div class="full">
+                <div class="toggle-row">
+                  <input type="checkbox" id="adv-llm-audio-gate" checked />
+                  <label for="adv-llm-audio-gate" style="margin:0" title="Scale down LLM score when audio energy is low, preventing quiet moments from scoring too high">LLM audio gate</label>
+                </div>
+              </div>
+              <div>
+                <label for="adv-rep-threshold" title="Unique-word ratio below which repetition penalty applies (0–1)">Repetition threshold</label>
+                <input type="number" id="adv-rep-threshold" value="0.4" min="0" max="1" step="0.05" />
+              </div>
+              <div>
+                <label for="adv-rep-multiplier" title="Score multiplier applied when repetition is detected (0–1)">Repetition penalty</label>
+                <input type="number" id="adv-rep-multiplier" value="0.5" min="0" max="1" step="0.05" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Run button -->
       <button id="run-btn" disabled>▶ Generate Highlights</button>
 
@@ -499,6 +712,12 @@
           </div>
           <div id="progress-bar-container">
             <div id="progress-bar"></div>
+          </div>
+          <div id="llm-progress-container">
+            <div id="llm-progress-label">LLM scoring: candidate 0 / 0</div>
+            <div id="llm-progress-bar-container">
+              <div id="llm-progress-bar"></div>
+            </div>
           </div>
         </div>
         <div id="log-output"><span class="empty-state">Select a job from the queue to see its log, or submit a new job above.</span></div>
@@ -675,6 +894,19 @@ runBtn.addEventListener('click', async () => {
   fd.append('burn_subtitles', document.getElementById('opt-subtitles').checked ? 'true' : 'false');
   fd.append('genre',         document.getElementById('opt-genre').value);
   fd.append('platform',      document.getElementById('opt-platform').value);
+  fd.append('language',      document.getElementById('opt-language').value);
+  // Advanced settings
+  fd.append('text_weight',       document.getElementById('adv-text-weight').value);
+  fd.append('audio_weight',      document.getElementById('adv-audio-weight').value);
+  fd.append('min_text_score',    document.getElementById('adv-min-text-score').value);
+  fd.append('reaction_weight',   document.getElementById('adv-reaction-weight').value);
+  fd.append('min_clip_duration', document.getElementById('adv-min-clip-dur').value);
+  fd.append('max_clip_duration', document.getElementById('adv-max-clip-dur').value);
+  fd.append('min_clip_spacing',  document.getElementById('adv-min-spacing').value);
+  fd.append('llm_audio_spike_percentage', document.getElementById('adv-spike-pct').value);
+  fd.append('llm_audio_gate',    document.getElementById('adv-llm-audio-gate').checked ? 'true' : 'false');
+  fd.append('repetition_penalty_threshold',  document.getElementById('adv-rep-threshold').value);
+  fd.append('repetition_penalty_multiplier', document.getElementById('adv-rep-multiplier').value);
 
   try {
     const res = await fetch('/api/jobs', { method: 'POST', body: fd });
@@ -718,8 +950,11 @@ function renderJobList(list) {
       <div class="job-status-dot dot-${j.status}"></div>
       <div class="job-name" title="${esc(j.video_name)}">${esc(j.video_name)}</div>
       <span class="job-badge badge-${j.status}">${j.status}</span>
-      ${(j.status === 'done' || j.status === 'failed') ? `
+      ${(j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') ? `
         <button class="btn-rerun" onclick="event.stopPropagation(); rerunJob('${j.job_id}')">↺ Re-run</button>
+      ` : ''}
+      ${(j.status === 'running' || j.status === 'queued') ? `
+        <button class="btn-cancel" onclick="event.stopPropagation(); cancelJob('${j.job_id}')">✕ Cancel</button>
       ` : ''}
     </div>
   `).join('');
@@ -770,6 +1005,10 @@ function openSSE(jobId) {
       appendLog(msg.line);
     } else if (msg.type === 'progress') {
       updateProgress(msg.stage, msg.total, msg.stage_name, msg.percentage);
+    } else if (msg.type === 'llm_progress') {
+      updateLLMProgress(msg.current, msg.total);
+    } else if (msg.type === 'llm_done') {
+      finishLLMProgress(msg.scored);
     } else if (msg.type === 'done') {
       es.close();
       activeSSE = null;
@@ -852,6 +1091,35 @@ function resetProgress() {
   bar.style.width = '0%';
   label.textContent = 'Stage 0 / 7';
   pct.textContent = '0%';
+
+  // Also reset LLM mini bar
+  document.getElementById('llm-progress-container').style.display = 'none';
+  document.getElementById('llm-progress-bar').style.width = '0%';
+  document.getElementById('llm-progress-label').textContent = 'LLM scoring: candidate 0 / 0';
+}
+
+/* ================================================================
+   LLM mini progress bar
+   ================================================================ */
+function updateLLMProgress(current, total) {
+  const container = document.getElementById('llm-progress-container');
+  const bar       = document.getElementById('llm-progress-bar');
+  const label     = document.getElementById('llm-progress-label');
+
+  container.style.display = '';
+  label.textContent = `LLM scoring: candidate ${current} / ${total}`;
+  bar.style.width = `${Math.round((current / total) * 100)}%`;
+}
+
+function finishLLMProgress(scored) {
+  const container = document.getElementById('llm-progress-container');
+  const bar       = document.getElementById('llm-progress-bar');
+  const label     = document.getElementById('llm-progress-label');
+
+  bar.style.width = '100%';
+  label.textContent = `LLM scoring complete (${scored} candidate${scored !== 1 ? 's' : ''})`;
+  // Hide after a short delay
+  setTimeout(() => { container.style.display = 'none'; }, 3000);
 }
 
 /* ================================================================
@@ -868,6 +1136,7 @@ function renderClips(clips, jobId) {
       <div class="clip-card-header" onclick="toggleWhy(${i})">
         <div class="clip-rank">${i + 1}</div>
         <div class="clip-info">
+          ${c.thumbnail_url ? `<img src="${esc(c.thumbnail_url)}" alt="Clip thumbnail" style="max-width:100%;height:80px;object-fit:cover;border-radius:4px;margin-bottom:6px;display:block;">` : ''}
           <div class="clip-name" title="${esc(c.name)}">${esc(c.name)}</div>
           <div class="clip-meta">${esc(c.timestamp_range)}${c.duration ? '  · ' + esc(c.duration) : ''}${c.score ? '  · score=' + esc(c.score) : ''}</div>
         </div>
@@ -886,6 +1155,21 @@ function renderClips(clips, jobId) {
 function toggleWhy(i) {
   const el = document.getElementById(`why-${i}`);
   if (el) el.classList.toggle('open');
+}
+
+/* ================================================================
+   Cancel a running job
+   ================================================================ */
+async function cancelJob(jobId) {
+  if (!confirm('Cancel this job? The pipeline will stop at the next checkpoint.')) return;
+  try {
+    const res  = await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Cancel failed');
+    await refreshJobs();
+  } catch (err) {
+    alert('Cancel error: ' + err.message);
+  }
 }
 
 /* ================================================================
@@ -933,6 +1217,9 @@ async function rerunJob(jobId) {
 
     const platformEl = document.getElementById('opt-platform');
     if (opts.platform) platformEl.value = opts.platform;
+
+    const languageEl = document.getElementById('opt-language');
+    if (opts.language) languageEl.value = opts.language;
 
     // Handle original video file
     const origPath = opts.original_video_path || '';
@@ -986,8 +1273,97 @@ function esc(str) {
 }
 
 /* ================================================================
+   Advanced settings — collapsible sections
+   ================================================================ */
+function toggleAdv(section) {
+  const body    = document.getElementById(`body-${section}`);
+  const chevron = document.getElementById(`chevron-${section}`);
+  const header  = chevron.closest('.adv-section-header');
+  const open    = body.classList.toggle('open');
+  header.classList.toggle('open', open);
+  chevron.textContent = open ? '▼' : '▶';
+  saveSettings();
+}
+
+/* ================================================================
+   localStorage persistence
+   ================================================================ */
+const LS_KEY = 'vhg_settings_v2';
+
+const ADV_IDS = [
+  'adv-text-weight', 'adv-audio-weight', 'adv-min-text-score', 'adv-reaction-weight',
+  'adv-min-clip-dur', 'adv-max-clip-dur', 'adv-min-spacing', 'adv-spike-pct',
+  'adv-subtitles', 'adv-genre2', 'adv-platform2',
+  'adv-llm-audio-gate', 'adv-rep-threshold', 'adv-rep-multiplier',
+];
+const BASIC_IDS = [
+  'opt-whisper', 'opt-topn', 'opt-outdir', 'opt-keywords',
+  'opt-genre', 'opt-language', 'opt-platform', 'opt-subtitles',
+];
+const OPEN_SECTIONS = ['scoring', 'clips', 'advanced'];
+
+function saveSettings() {
+  const s = {};
+  [...BASIC_IDS, ...ADV_IDS].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    s[id] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  OPEN_SECTIONS.forEach(sec => {
+    s[`open_${sec}`] = document.getElementById(`body-${sec}`).classList.contains('open');
+  });
+  try { localStorage.setItem(LS_KEY, JSON.stringify(s)); } catch (_) {}
+}
+
+function loadSettings() {
+  let s;
+  try { s = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (_) { s = null; }
+  if (!s) return;
+
+  [...BASIC_IDS, ...ADV_IDS].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el || !(id in s)) return;
+    if (el.type === 'checkbox') el.checked = s[id];
+    else el.value = s[id];
+  });
+
+  // Sync slider display values
+  ['adv-text-weight','adv-audio-weight','adv-min-text-score'].forEach(id => {
+    const el = document.getElementById(id);
+    const valEl = document.getElementById('val-' + id.replace('adv-',''));
+    if (el && valEl) valEl.textContent = parseFloat(el.value).toFixed(2);
+  });
+  const rwEl = document.getElementById('adv-reaction-weight');
+  const rwVal = document.getElementById('val-reaction-weight');
+  if (rwEl && rwVal) rwVal.textContent = parseFloat(rwEl.value).toFixed(1);
+
+  // Restore open/closed state
+  OPEN_SECTIONS.forEach(sec => {
+    if (s[`open_${sec}`]) {
+      const body    = document.getElementById(`body-${sec}`);
+      const chevron = document.getElementById(`chevron-${sec}`);
+      const header  = chevron.closest('.adv-section-header');
+      body.classList.add('open');
+      header.classList.add('open');
+      chevron.textContent = '▼';
+    }
+  });
+
+  // Sync LLM model row visibility
+  const llmEl = document.getElementById('opt-llm');
+  if (llmEl) llmModelRow.style.display = llmEl.checked ? '' : 'none';
+}
+
+// Auto-save on any change to a tracked input
+[...BASIC_IDS, ...ADV_IDS].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', saveSettings);
+});
+
+/* ================================================================
    Boot
    ================================================================ */
+loadSettings();
 startPolling();
 </script>
 </body>

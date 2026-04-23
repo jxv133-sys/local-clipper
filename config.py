@@ -20,6 +20,7 @@ class Config:
 
     # Whisper
     whisper_model: str = "base"      # Whisper model size: tiny/base/small/medium/large
+    language: str = "auto"           # Transcription language: "auto" for detection, or e.g. "en", "es"
 
     # Scoring weights (must sum to 1.0 when LLM is enabled)
     # Default: balanced text/audio. When LLM enabled, weights auto-adjust in main.py.
@@ -108,6 +109,12 @@ class Config:
     # Set to 0.0 to disable burst detection entirely.
     burst_weight: float = 0.3
 
+    # Transcript deduplication — Jaccard similarity threshold.
+    # After the spacing pass, pairs of clips whose transcript word-set Jaccard
+    # similarity exceeds this value are considered near-duplicates; the
+    # lower-scoring clip is discarded.  Set to 1.0 to disable deduplication.
+    dedup_similarity_threshold: float = 0.7
+
     # Minimum time gap between selected clips (seconds).
     # After ranking, a greedy pass ensures no two accepted clips start within
     # this many seconds of each other.  Clips that are too close to a
@@ -128,6 +135,10 @@ class Config:
     # multiplier.  Single-word segments are never penalized.
     repetition_penalty_threshold: float = 0.4   # ratio below which penalty applies
     repetition_penalty_multiplier: float = 0.5  # multiply text score by this when penalized
+
+    # Transcript caching
+    use_cache: bool = True           # Set to False to force re-transcription (--no-cache)
+    cache_dir: str = field(default_factory=lambda: os.path.expanduser("~/.cache/local-clipper"))
 
     # Subtitles
     burn_subtitles: bool = True      # Set to False to skip burning captions into clips
@@ -184,3 +195,42 @@ class Config:
         "reels":   {"min": 5.0,  "max": 90.0},
         "none":    {"min": 10.0, "max": 100.0},
     })
+
+    def __post_init__(self) -> None:
+        """Validate config fields after construction."""
+        _TOL = 1e-9
+
+        # Weight sum check — only when LLM is enabled (weights are set after
+        # construction in build_config, so skip when llm_enabled is False)
+        if self.llm_enabled:
+            weight_sum = self.text_weight + self.audio_weight + self.llm_weight
+            if abs(weight_sum - 1.0) > _TOL:
+                raise ValueError(
+                    f"text_weight + audio_weight + llm_weight must equal 1.0 "
+                    f"when LLM is enabled, got {weight_sum:.6f}"
+                )
+
+        if self.min_clip_duration > self.max_clip_duration:
+            raise ValueError(
+                f"min_clip_duration ({self.min_clip_duration}) must be <= "
+                f"max_clip_duration ({self.max_clip_duration})"
+            )
+
+        if not (0.0 <= self.llm_audio_spike_percentage <= 1.0):
+            raise ValueError(
+                f"llm_audio_spike_percentage must be between 0.0 and 1.0, "
+                f"got {self.llm_audio_spike_percentage}"
+            )
+
+        if self.audio_percentile_low >= self.audio_percentile_high:
+            raise ValueError(
+                f"audio_percentile_low ({self.audio_percentile_low}) must be < "
+                f"audio_percentile_high ({self.audio_percentile_high})"
+            )
+
+        excitement_sum = self.excitement_volume_weight + self.excitement_pitch_weight
+        if abs(excitement_sum - 1.0) > _TOL:
+            raise ValueError(
+                f"excitement_volume_weight + excitement_pitch_weight must equal 1.0, "
+                f"got {excitement_sum:.6f}"
+            )

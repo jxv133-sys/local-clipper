@@ -25,7 +25,7 @@ A local, self-hosted pipeline that automatically finds the best moments in a vid
 brew install ffmpeg
 
 # 2. Clone the repo
-git clone https://github.com/jxv133-sys/local-clipper.git
+git clone https://github.com/your-username/local-clipper.git
 cd local-clipper
 
 # 3. Install Python dependencies
@@ -161,7 +161,7 @@ Run the web UI headlessly on a Linux server using Docker Compose.
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/jxv133-sys/local-clipper.git
+git clone https://github.com/your-username/local-clipper.git
 cd local-clipper
 
 # 2. Start the services
@@ -262,7 +262,7 @@ sudo systemctl stop ollama
 If Ollama is running on a different machine, pass its address via `--llm-endpoint`:
 
 ```bash
-python3 main.py video.mp4 --llm --llm-endpoint http://192.168.1.100:11434/api/generate
+python3 main.py video.mp4 --llm --llm-endpoint http://YOUR_OLLAMA_HOST:11434/api/generate
 ```
 
 When using Docker Compose, the `app` service connects to the `ollama` service automatically via the `OLLAMA_HOST` environment variable. No extra configuration is needed inside the app.

@@ -1271,7 +1271,8 @@ class TestSpacingAfterLLMRefinement:
         scored = [make_scored(seg_a, 0.9), make_scored(seg_b, 0.5)]
         all_segs = [make_segment(i * 2.0, i * 2.0 + 2.0) for i in range(250)]
         transcript = make_transcript(all_segs)
-        config = self._make_config_llm_enabled()
+        # dedup_similarity_threshold=1.0 disables dedup so this test focuses on spacing only
+        config = self._make_config_llm_enabled(dedup_similarity_threshold=1.0)
 
         clips = select_clips(config, scored, transcript, video_duration=500.0)
 
@@ -1280,3 +1281,242 @@ class TestSpacingAfterLLMRefinement:
         clip_scores = {c.score for c in clips}
         assert 0.9 in clip_scores, "Expected high-scoring clip (0.9) to be present"
         assert 0.5 in clip_scores, "Expected second clip (0.5) to be present"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Transcript deduplication — Jaccard similarity pass
+# ---------------------------------------------------------------------------
+
+class TestTranscriptDeduplication:
+    """After the spacing pass, clips with near-identical transcript content are deduplicated."""
+
+    def _make_scored_seg(self, start: float, end: float, text: str, score: float) -> ScoredSegment:
+        seg = Segment(start=start, end=end, text=text)
+        return ScoredSegment(
+            segment=seg,
+            text_score=score,
+            audio_score=score,
+            llm_score=0.0,
+            clip_score=score,
+        )
+
+    def test_identical_text_deduplicates_lower_score(self):
+        """Two clips with identical transcript text: the lower-scoring one is removed."""
+        # Both clips share the exact same transcript text
+        shared_text = "this is a great moment watch this incredible play"
+        # Place them far apart so spacing pass keeps both, but text is identical
+        seg_a = Segment(start=0.0, end=5.0, text=shared_text)
+        seg_b = Segment(start=600.0, end=605.0, text=shared_text)
+
+        scored = [
+            ScoredSegment(segment=seg_a, text_score=0.9, audio_score=0.9, llm_score=0.0, clip_score=0.9),
+            ScoredSegment(segment=seg_b, text_score=0.5, audio_score=0.5, llm_score=0.0, clip_score=0.5),
+        ]
+        # Transcript contains both segments
+        transcript = make_transcript([seg_a, seg_b])
+        config = make_config(
+            top_n_clips=2,
+            min_clip_spacing=0.0,  # disable spacing so both survive to dedup pass
+            dedup_similarity_threshold=0.7,
+        )
+
+        clips = select_clips(config, scored, transcript, video_duration=1200.0)
+
+        # Only the higher-scoring clip should survive
+        assert len(clips) == 1, f"Expected 1 clip after dedup, got {len(clips)}: {[(c.start, c.score) for c in clips]}"
+        assert clips[0].score == 0.9, f"Expected score=0.9 (higher-scoring kept), got {clips[0].score}"
+
+    def test_dissimilar_text_both_kept(self):
+        """Two clips with completely different transcript text are both kept."""
+        seg_a = Segment(start=0.0, end=5.0, text="amazing clutch play incredible moment")
+        seg_b = Segment(start=600.0, end=605.0, text="cooking recipe pasta sauce tomato basil")
+
+        scored = [
+            ScoredSegment(segment=seg_a, text_score=0.9, audio_score=0.9, llm_score=0.0, clip_score=0.9),
+            ScoredSegment(segment=seg_b, text_score=0.8, audio_score=0.8, llm_score=0.0, clip_score=0.8),
+        ]
+        transcript = make_transcript([seg_a, seg_b])
+        config = make_config(
+            top_n_clips=2,
+            min_clip_spacing=0.0,
+            dedup_similarity_threshold=0.7,
+        )
+
+        clips = select_clips(config, scored, transcript, video_duration=1200.0)
+
+        assert len(clips) == 2, f"Expected 2 clips (dissimilar text), got {len(clips)}"
+        scores = {c.score for c in clips}
+        assert 0.9 in scores and 0.8 in scores
+
+    def test_threshold_respected_just_below_keeps_both(self):
+        """Similarity just below the threshold keeps both clips."""
+        # Craft two texts with known Jaccard similarity just below 0.7
+        # Words in A: {a, b, c, d, e, f, g, h, i, j}  (10 words)
+        # Words in B: {a, b, c, d, e, f, x, y, z, w}  (10 words)
+        # Intersection: {a,b,c,d,e,f} = 6, Union = 14, Jaccard = 6/14 ≈ 0.43 < 0.7
+        text_a = "a b c d e f g h i j"
+        text_b = "a b c d e f x y z w"
+
+        seg_a = Segment(start=0.0, end=5.0, text=text_a)
+        seg_b = Segment(start=600.0, end=605.0, text=text_b)
+
+        scored = [
+            ScoredSegment(segment=seg_a, text_score=0.9, audio_score=0.9, llm_score=0.0, clip_score=0.9),
+            ScoredSegment(segment=seg_b, text_score=0.8, audio_score=0.8, llm_score=0.0, clip_score=0.8),
+        ]
+        transcript = make_transcript([seg_a, seg_b])
+        config = make_config(
+            top_n_clips=2,
+            min_clip_spacing=0.0,
+            dedup_similarity_threshold=0.7,
+        )
+
+        clips = select_clips(config, scored, transcript, video_duration=1200.0)
+
+        assert len(clips) == 2, (
+            f"Expected 2 clips (similarity below threshold), got {len(clips)}: "
+            f"{[(c.start, c.score) for c in clips]}"
+        )
+
+    def test_dedup_logs_removal(self, caplog):
+        """Removal of a duplicate clip is logged with the correct format."""
+        import logging
+
+        shared_text = "watch this incredible moment right now"
+        seg_a = Segment(start=0.0, end=5.0, text=shared_text)
+        seg_b = Segment(start=600.0, end=605.0, text=shared_text)
+
+        scored = [
+            ScoredSegment(segment=seg_a, text_score=0.9, audio_score=0.9, llm_score=0.0, clip_score=0.9),
+            ScoredSegment(segment=seg_b, text_score=0.5, audio_score=0.5, llm_score=0.0, clip_score=0.5),
+        ]
+        transcript = make_transcript([seg_a, seg_b])
+        config = make_config(
+            top_n_clips=2,
+            min_clip_spacing=0.0,
+            dedup_similarity_threshold=0.7,
+        )
+
+        with caplog.at_level(logging.INFO, logger="pipeline.clip_selector"):
+            select_clips(config, scored, transcript, video_duration=1200.0)
+
+        log_messages = [r.message for r in caplog.records]
+        assert any("transcript similarity" in msg for msg in log_messages), (
+            f"Expected a 'transcript similarity' log message, got: {log_messages}"
+        )
+        assert any("removed" in msg for msg in log_messages), (
+            f"Expected 'removed' in log message, got: {log_messages}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 11: Auto-scale min_clip_spacing for short videos
+# ---------------------------------------------------------------------------
+
+class TestAutoScaleMinClipSpacing:
+    """Auto-scaling of min_clip_spacing when video is too short for the default spacing."""
+
+    def _make_segments(self, starts, duration=5.0, text="hello"):
+        return [make_segment(s, s + duration, text) for s in starts]
+
+    def test_short_video_auto_scales_spacing(self):
+        """10-minute video (600s) with top_n=5: spacing auto-scales from 300s to 100s (600/6)."""
+        video_duration = 600.0  # 10 minutes
+        top_n = 5
+        # 5 segments spread across the video
+        seg_starts = [i * 100.0 for i in range(top_n)]
+        segments = self._make_segments(seg_starts)
+        scored = [make_scored(seg, float(i + 1) / top_n) for i, seg in enumerate(segments)]
+        transcript = make_transcript(segments)
+        config = make_config(
+            top_n_clips=top_n,
+            min_clip_spacing=300.0,  # default 5 minutes
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+        )
+
+        # video_duration / top_n_clips = 600 / 5 = 120 < 300 → auto-scale to 600 / 6 = 100s
+        clips = select_clips(config, scored, transcript, video_duration=video_duration)
+
+        # With effective_spacing=100s, segments 100s apart should all be accepted
+        # (they are exactly at the boundary or beyond)
+        assert len(clips) == top_n, (
+            f"Expected {top_n} clips after auto-scaling spacing to 100s, got {len(clips)}"
+        )
+
+    def test_long_video_does_not_auto_scale(self):
+        """Long video (3600s) with top_n=5: spacing should NOT auto-scale (3600/5=720 > 300)."""
+        video_duration = 3600.0  # 1 hour
+        top_n = 5
+        # 5 segments spread 700s apart (well beyond 300s spacing)
+        seg_starts = [i * 700.0 for i in range(top_n)]
+        segments = self._make_segments(seg_starts)
+        scored = [make_scored(seg, float(i + 1) / top_n) for i, seg in enumerate(segments)]
+        transcript = make_transcript(segments)
+        config = make_config(
+            top_n_clips=top_n,
+            min_clip_spacing=300.0,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+        )
+
+        # video_duration / top_n_clips = 3600 / 5 = 720 > 300 → no auto-scaling
+        clips = select_clips(config, scored, transcript, video_duration=video_duration)
+
+        # All 5 clips are 700s apart (> 300s), so all should be accepted
+        assert len(clips) == top_n, (
+            f"Expected {top_n} clips (no auto-scaling needed), got {len(clips)}"
+        )
+
+    def test_auto_scale_log_message_emitted(self, caplog):
+        """Log message is emitted when auto-scaling occurs."""
+        import logging
+
+        video_duration = 600.0
+        top_n = 5
+        seg_starts = [i * 100.0 for i in range(top_n)]
+        segments = self._make_segments(seg_starts)
+        scored = [make_scored(seg, float(i + 1) / top_n) for i, seg in enumerate(segments)]
+        transcript = make_transcript(segments)
+        config = make_config(
+            top_n_clips=top_n,
+            min_clip_spacing=300.0,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+        )
+
+        with caplog.at_level(logging.INFO, logger="pipeline.clip_selector"):
+            select_clips(config, scored, transcript, video_duration=video_duration)
+
+        log_messages = [r.message for r in caplog.records]
+        assert any("Auto-scaled min_clip_spacing" in msg for msg in log_messages), (
+            f"Expected auto-scale log message, got: {log_messages}"
+        )
+        assert any("video too short" in msg for msg in log_messages), (
+            f"Expected 'video too short' in log message, got: {log_messages}"
+        )
+
+    def test_no_auto_scale_log_when_not_needed(self, caplog):
+        """No auto-scale log message when video is long enough."""
+        import logging
+
+        video_duration = 3600.0
+        top_n = 5
+        seg_starts = [i * 700.0 for i in range(top_n)]
+        segments = self._make_segments(seg_starts)
+        scored = [make_scored(seg, float(i + 1) / top_n) for i, seg in enumerate(segments)]
+        transcript = make_transcript(segments)
+        config = make_config(
+            top_n_clips=top_n,
+            min_clip_spacing=300.0,
+            min_clip_duration=20.0,
+            max_clip_duration=45.0,
+        )
+
+        with caplog.at_level(logging.INFO, logger="pipeline.clip_selector"):
+            select_clips(config, scored, transcript, video_duration=video_duration)
+
+        log_messages = [r.message for r in caplog.records]
+        assert not any("Auto-scaled min_clip_spacing" in msg for msg in log_messages), (
+            f"Expected no auto-scale log message for long video, got: {log_messages}"
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import subprocess
@@ -14,19 +15,78 @@ from pipeline.models import Clip
 logger = logging.getLogger(__name__)
 
 
+def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[int, str]:
+    """Extract a single clip and return ``(clip.rank, output_path)``.
+
+    Attempts stream-copy first; re-encodes if the probed duration differs by
+    more than 1 second from the requested duration.
+
+    Args:
+        config: Pipeline configuration (``output_dir`` must be set).
+        clip: The clip to extract.
+        video_path: Path to the source video file.
+
+    Returns:
+        A ``(rank, output_path)`` tuple.
+
+    Raises:
+        ClipExtractionError: If FFmpeg exits with a non-zero return code.
+    """
+    t0 = time.time()
+    filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
+    output_path = os.path.join(config.output_dir, filename)
+
+    # --- Attempt 1: stream-copy (no re-encoding) ---
+    _run_ffmpeg(
+        [
+            "ffmpeg", "-y",
+            "-ss", str(clip.start),
+            "-to", str(clip.end),
+            "-i", video_path,
+            "-c", "copy",
+            output_path,
+        ],
+        output_path,
+    )
+
+    # --- Verify duration via ffprobe ---
+    requested_duration = clip.end - clip.start
+    probed_duration = _probe_duration(output_path)
+
+    if probed_duration is not None and abs(probed_duration - requested_duration) > 1.0:
+        # --- Attempt 2: re-encode for accurate cut points ---
+        logger.info("  Clip #%d: stream-copy duration mismatch (%.1fs vs %.1fs) — re-encoding",
+                    clip.rank, probed_duration, requested_duration)
+        _run_ffmpeg(
+            [
+                "ffmpeg", "-y",
+                "-ss", str(clip.start),
+                "-to", str(clip.end),
+                "-i", video_path,
+                output_path,
+            ],
+            output_path,
+        )
+
+    file_size_mb = os.path.getsize(output_path) / (1024 * 1024) if os.path.exists(output_path) else 0.0
+    logger.info("  Clip #%d: %s (%.2f MB, %.1fs)", clip.rank, output_path, file_size_mb, time.time() - t0)
+    return clip.rank, output_path
+
+
 def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[str]:
-    """Extract each Clip from *video_path* using FFmpeg.
+    """Extract each Clip from *video_path* using FFmpeg, running concurrently.
 
     Attempts stream-copy first to preserve original quality.  If the probed
     duration of the stream-copied file differs from the requested duration by
     more than 1 second, re-extracts with re-encoding for accurate cut points.
 
     Output files are named ``clip_<rank>_<start_seconds>s.mp4`` and written to
-    ``config.output_dir``.
+    ``config.output_dir``.  Up to 4 clips are extracted in parallel using a
+    ``ThreadPoolExecutor``; the returned list is always in ascending rank order.
 
     Args:
         config: Pipeline configuration (``output_dir`` must be set).
-        clips: List of Clip objects to extract, sorted by rank.
+        clips: List of Clip objects to extract.
         video_path: Path to the source video file.
 
     Returns:
@@ -35,53 +95,31 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
     Raises:
         ClipExtractionError: If FFmpeg exits with a non-zero return code.
     """
+    if not clips:
+        return []
+
     os.makedirs(config.output_dir, exist_ok=True)
 
     logger.info("ClipExtractor starting — %d clip(s) to extract", len(clips))
     t0_total = time.time()
 
-    output_paths: list[str] = []
+    max_workers = min(len(clips), 4)
+    results: list[tuple[int, str]] = []
 
-    for clip in sorted(clips, key=lambda c: c.rank):
-        t0 = time.time()
-        filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
-        output_path = os.path.join(config.output_dir, filename)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_extract_single_clip, config, clip, video_path): clip
+            for clip in clips
+        }
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                results.append(future.result())
+            except ClipExtractionError:
+                raise
 
-        # --- Attempt 1: stream-copy (no re-encoding) ---
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y",
-                "-ss", str(clip.start),
-                "-to", str(clip.end),
-                "-i", video_path,
-                "-c", "copy",
-                output_path,
-            ],
-            output_path,
-        )
-
-        # --- Verify duration via ffprobe ---
-        requested_duration = clip.end - clip.start
-        probed_duration = _probe_duration(output_path)
-
-        if probed_duration is not None and abs(probed_duration - requested_duration) > 1.0:
-            # --- Attempt 2: re-encode for accurate cut points ---
-            logger.info("  Clip #%d: stream-copy duration mismatch (%.1fs vs %.1fs) — re-encoding",
-                        clip.rank, probed_duration, requested_duration)
-            _run_ffmpeg(
-                [
-                    "ffmpeg", "-y",
-                    "-ss", str(clip.start),
-                    "-to", str(clip.end),
-                    "-i", video_path,
-                    output_path,
-                ],
-                output_path,
-            )
-
-        file_size_mb = os.path.getsize(output_path) / (1024 * 1024) if os.path.exists(output_path) else 0.0
-        logger.info("  Clip #%d: %s (%.2f MB, %.1fs)", clip.rank, output_path, file_size_mb, time.time() - t0)
-        output_paths.append(output_path)
+    # Sort by rank to preserve rank-ordered output regardless of completion order
+    results.sort(key=lambda t: t[0])
+    output_paths = [path for _, path in results]
 
     logger.info("ClipExtractor complete — %d clip(s) in %.1fs", len(output_paths), time.time() - t0_total)
     return output_paths
@@ -132,4 +170,51 @@ def _probe_duration(file_path: str) -> float | None:
     try:
         return float(result.stdout.strip())
     except (ValueError, AttributeError):
+        return None
+
+
+def generate_thumbnail(clip_path: str) -> str | None:
+    """Generate a JPEG thumbnail at the midpoint of a clip.
+
+    Uses ffprobe to determine the clip duration, then extracts a single frame
+    at the midpoint with ffmpeg.  Falls back to 1.0 s if the duration cannot
+    be determined.
+
+    The thumbnail is saved alongside the clip as ``<clip_stem>_thumb.jpg``.
+
+    Args:
+        clip_path: Path to the clip ``.mp4`` file.
+
+    Returns:
+        The path to the generated thumbnail on success, or ``None`` if
+        thumbnail generation fails (non-fatal).
+    """
+    try:
+        duration = _probe_duration(clip_path)
+        mid = (duration / 2.0) if (duration is not None and duration > 0) else 1.0
+
+        stem = os.path.splitext(clip_path)[0]
+        thumb_path = f"{stem}_thumb.jpg"
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", str(mid),
+                "-i", clip_path,
+                "-frames:v", "1",
+                "-q:v", "2",
+                thumb_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.warning("Thumbnail generation failed for %s: %s", clip_path, result.stderr.strip())
+            return None
+
+        logger.info("  Thumbnail: %s", thumb_path)
+        return thumb_path
+    except Exception as exc:
+        logger.warning("Thumbnail generation error for %s: %s", clip_path, exc)
         return None

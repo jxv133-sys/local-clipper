@@ -47,7 +47,7 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 
 from config import Config
 from pipeline.audio_extractor import extract_audio
-from pipeline.clip_extractor import extract_clips
+from pipeline.clip_extractor import extract_clips, generate_thumbnail
 from pipeline.clip_selector import select_clips
 from pipeline.exceptions import PipelineError
 from pipeline.report_generator import generate_report
@@ -81,6 +81,7 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -94,6 +95,8 @@ class Job:
     error: str = ""
     created_at: float = field(default_factory=time.time)
     job_config_options: dict = field(default_factory=dict)
+    # Cancellation signal — set this event to request cancellation
+    cancel_event: threading.Event = field(default_factory=threading.Event)
     # SSE subscribers: each is a queue.Queue that receives log-line strings
     _subscribers: list[queue.Queue] = field(default_factory=list)
 
@@ -115,6 +118,19 @@ class Job:
             "percentage": percentage
         })
         sentinel = f"__PROGRESS__:{msg}"
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(sentinel)
+            except queue.Full:
+                pass
+
+    def add_llm_progress(self, current: int, total: int) -> None:
+        """Emit an LLM scoring progress event to all SSE subscribers."""
+        if current == total:
+            msg = json.dumps({"type": "llm_done", "scored": total})
+        else:
+            msg = json.dumps({"type": "llm_progress", "current": current, "total": total})
+        sentinel = f"__LLM_PROGRESS__:{msg}"
         for q in list(self._subscribers):
             try:
                 q.put_nowait(sentinel)
@@ -196,6 +212,10 @@ def _get_video_duration(video_path: str) -> float:
         return 86400.0
 
 
+class _CancelledError(Exception):
+    """Raised internally when a job's cancel_event is set."""
+
+
 def _run_pipeline_for_job(job: Job) -> None:
     """Execute the full pipeline for a job, posting log lines to job.add_log()."""
 
@@ -216,6 +236,8 @@ def _run_pipeline_for_job(job: Job) -> None:
 
     try:
         # Stage 1: Audio extraction (0% → 5%)
+        if job.cancel_event.is_set():
+            raise _CancelledError()
         job.add_progress(1, 7, "Audio Extraction", 5)
         log("[AudioExtractor] Starting...")
         t0 = time.time()
@@ -223,6 +245,8 @@ def _run_pipeline_for_job(job: Job) -> None:
         log(f"[AudioExtractor] Done in {time.time() - t0:.1f}s")
 
         # Stage 2: Transcription (5% → 60%)
+        if job.cancel_event.is_set():
+            raise _CancelledError()
         job.add_progress(2, 7, "Transcription", 10)
         log("[Transcriber] Starting...")
         t0 = time.time()
@@ -239,10 +263,17 @@ def _run_pipeline_for_job(job: Job) -> None:
             log("[Transcriber] Warning: No speech detected — scoring on audio energy only")
 
         # Stage 3: Scoring (60% → 70%)
+        if job.cancel_event.is_set():
+            raise _CancelledError()
         job.add_progress(3, 7, "Scoring Segments", 65)
         log("[Scorer] Starting...")
         t0 = time.time()
-        scored_segments = score_segments(job.config, transcript, wav_path)
+
+        def llm_progress_callback(current: int, total: int) -> None:
+            job.add_llm_progress(current, total)
+
+        scored_segments = score_segments(job.config, transcript, wav_path,
+                                         llm_progress_callback=llm_progress_callback)
         log(f"[Scorer] Done in {time.time() - t0:.1f}s — {len(scored_segments)} segment(s) scored")
         job.add_progress(3, 7, "Scoring Segments", 70)
 
@@ -250,6 +281,8 @@ def _run_pipeline_for_job(job: Job) -> None:
             raise PipelineError("No segments to score. The video may have no audio content.")
 
         # Stage 4: Clip selection (70% → 75%)
+        if job.cancel_event.is_set():
+            raise _CancelledError()
         job.add_progress(4, 7, "Selecting Clips", 72)
         log("[ClipSelector] Starting...")
         t0 = time.time()
@@ -262,6 +295,8 @@ def _run_pipeline_for_job(job: Job) -> None:
             raise PipelineError("No clips selected. Try lowering Top N or check the video.")
 
         # Stage 5: Clip extraction (75% → 85%)
+        if job.cancel_event.is_set():
+            raise _CancelledError()
         job.add_progress(5, 7, "Extracting Clips", 77)
         log("[ClipExtractor] Starting...")
         t0 = time.time()
@@ -283,13 +318,18 @@ def _run_pipeline_for_job(job: Job) -> None:
         t0 = time.time()
         result_clips: list[dict] = []
         for clip, clip_path in zip(clips, final_paths):
-            report_path = generate_report(clip, scored_segments, transcript, clip_path)
+            report_path = generate_report(clip, scored_segments, transcript, clip_path, job.config)
             why_text = ""
             try:
                 with open(report_path, encoding="utf-8") as fh:
                     why_text = fh.read()
             except OSError:
                 pass
+
+            # Generate thumbnail (non-fatal)
+            thumb_path = generate_thumbnail(clip_path)
+            thumbnail_name = os.path.basename(thumb_path) if thumb_path else None
+
             result_clips.append({
                 "path": clip_path,
                 "name": os.path.basename(clip_path),
@@ -298,6 +338,7 @@ def _run_pipeline_for_job(job: Job) -> None:
                 "timestamp_range": _format_timestamp_range(clip.start, clip.end),
                 "duration": f"{int(round(clip.end - clip.start))}s",
                 "score": f"{clip.score:.2f}",
+                "thumbnail_name": thumbnail_name,
             })
         log(f"[ReportGenerator] Done in {time.time() - t0:.1f}s — {len(result_clips)} report(s)")
         job.add_progress(7, 7, "Complete", 100)
@@ -309,6 +350,12 @@ def _run_pipeline_for_job(job: Job) -> None:
         job.status = JobStatus.DONE
         log(f"[Job {job.job_id[:8]}] ✓ Pipeline complete — {len(result_clips)} clip(s) exported")
 
+    except _CancelledError:
+        job.status = JobStatus.CANCELLED
+        job.error = "Cancelled by user"
+        log(f"[Job {job.job_id[:8]}] ✗ Job cancelled")
+        # Clean up temp dir on cancellation
+        shutil.rmtree(job.config.work_dir, ignore_errors=True)
     except PipelineError as exc:
         job.error = str(exc)
         job.status = JobStatus.FAILED
@@ -412,6 +459,32 @@ def create_job():
     burn_subtitles = request.form.get("burn_subtitles", "true").lower() != "false"
     genre = request.form.get("genre", "auto").strip() or "auto"
     platform = request.form.get("platform", "none").strip() or "none"
+    language = request.form.get("language", "auto").strip() or "auto"
+
+    # Advanced settings (with safe float parsing)
+    def _float(key: str, default: float) -> float:
+        try:
+            return float(request.form.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
+    def _bool_field(key: str, default: bool) -> bool:
+        val = request.form.get(key, None)
+        if val is None:
+            return default
+        return val.lower() not in ("false", "0", "no")
+
+    adv_text_weight       = _float("text_weight", 0.5)
+    adv_audio_weight      = _float("audio_weight", 0.5)
+    adv_min_text_score    = _float("min_text_score", 0.05)
+    adv_reaction_weight   = _float("reaction_weight", 3.0)
+    adv_min_clip_duration = _float("min_clip_duration", 30.0)
+    adv_max_clip_duration = _float("max_clip_duration", 100.0)
+    adv_min_clip_spacing  = _float("min_clip_spacing", 300.0)
+    adv_spike_pct         = _float("llm_audio_spike_percentage", 0.2)
+    adv_llm_audio_gate    = _bool_field("llm_audio_gate", True)
+    adv_rep_threshold     = _float("repetition_penalty_threshold", 0.4)
+    adv_rep_multiplier    = _float("repetition_penalty_multiplier", 0.5)
 
     # Build config
     work_dir = tempfile.mkdtemp(prefix="highlight_web_")
@@ -424,6 +497,20 @@ def create_job():
     cfg.burn_subtitles = burn_subtitles
     cfg.genre = genre
     cfg.platform = platform
+    cfg.language = language
+
+    # Apply advanced settings
+    cfg.text_weight = adv_text_weight
+    cfg.audio_weight = adv_audio_weight
+    cfg.min_text_score_for_selection = adv_min_text_score
+    cfg.reaction_weight = adv_reaction_weight
+    cfg.min_clip_duration = adv_min_clip_duration
+    cfg.max_clip_duration = adv_max_clip_duration
+    cfg.min_clip_spacing = adv_min_clip_spacing
+    cfg.llm_audio_spike_percentage = adv_spike_pct
+    cfg.llm_audio_gate = adv_llm_audio_gate
+    cfg.repetition_penalty_threshold = adv_rep_threshold
+    cfg.repetition_penalty_multiplier = adv_rep_multiplier
 
     if keywords_raw.strip():
         cfg.keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
@@ -454,6 +541,7 @@ def create_job():
         "burn_subtitles": burn_subtitles,
         "genre": genre,
         "platform": platform,
+        "language": language,
         "original_video_path": str(upload_path),
     }
     _register_job(job)
@@ -489,6 +577,11 @@ def job_log_stream(job_id: str):
 
                 if line.startswith("__PROGRESS__:"):
                     payload = line[len("__PROGRESS__:"):]
+                    yield f"data: {payload}\n\n"
+                    continue
+
+                if line.startswith("__LLM_PROGRESS__:"):
+                    payload = line[len("__LLM_PROGRESS__:"):]
                     yield f"data: {payload}\n\n"
                     continue
 
@@ -529,6 +622,18 @@ def download_clip(job_id: str, clip_index: int):
     )
 
 
+@app.route("/api/jobs/<job_id>/cancel", methods=["POST"])
+def cancel_job(job_id: str):
+    """Signal a running job to stop at the next checkpoint."""
+    job = _get_job(job_id)
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+        return jsonify({"error": f"Job is already {job.status} and cannot be cancelled"}), 400
+    job.cancel_event.set()
+    return jsonify({"job_id": job_id, "status": "cancelling"}), 200
+
+
 # ---------------------------------------------------------------------------
 # API: Ollama models
 # ---------------------------------------------------------------------------
@@ -557,9 +662,9 @@ def list_ollama_models():
                 parts = line.split()
                 if parts:
                     model_name = parts[0]
-                    # Strip :latest suffix for cleaner display
-                    if model_name.endswith(":latest"):
-                        model_name = model_name[:-7]
+                    # Strip tag suffix (e.g. :latest, :8b, :7b-instruct) for cleaner display
+                    if ":" in model_name:
+                        model_name = model_name.split(":")[0]
                     models.append(model_name)
 
         return jsonify({"models": models, "error": None})
@@ -599,6 +704,7 @@ def _job_summary(job: Job) -> dict:
 def _job_detail(job: Job) -> dict:
     clips = []
     for i, c in enumerate(job.result_clips):
+        thumbnail_name = c.get("thumbnail_name")
         clips.append({
             "index": i,
             "name": c["name"],
@@ -607,6 +713,7 @@ def _job_detail(job: Job) -> dict:
             "timestamp_range": c.get("timestamp_range", ""),
             "duration": c.get("duration", ""),
             "score": c.get("score", ""),
+            "thumbnail_url": f"/output/{thumbnail_name}" if thumbnail_name else None,
         })
     return {
         **_job_summary(job),

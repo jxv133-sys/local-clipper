@@ -90,7 +90,7 @@ class TestTranscribeSuccess:
             mock_whisper.load_model.return_value = fake_model
             transcribe(config, str(wav))
 
-        fake_model.transcribe.assert_called_once_with(str(wav), word_timestamps=True)
+        fake_model.transcribe.assert_called_once_with(str(wav), word_timestamps=True, language=None)
 
     def test_writes_json_to_work_dir(self, tmp_path):
         """transcribe() serializes the Transcript to <work_dir>/transcript.json."""
@@ -484,3 +484,176 @@ class TestVadRemovedLogging:
         msg = vad_messages[0]
         assert "1 silent section" in msg
         assert "sections" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Transcript caching tests
+# ---------------------------------------------------------------------------
+
+import wave as _wave_module2
+
+
+def _write_minimal_wav(path) -> None:
+    """Write a minimal valid WAV file (0.1s silence)."""
+    with _wave_module2.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 1600)
+
+
+class TestTranscriptCaching:
+    """Verify transcript caching: write on first run, load on second run."""
+
+    def _make_config_with_cache(self, tmp_path) -> Config:
+        cfg = Config(work_dir=str(tmp_path))
+        cfg.cache_dir = str(tmp_path / "cache")
+        cfg.use_cache = True
+        return cfg
+
+    def test_cache_file_written_after_transcription(self, tmp_path):
+        """After transcribing, a cache file is written to cache_dir."""
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = self._make_config_with_cache(tmp_path)
+
+        whisper_segments = [{"start": 0.0, "end": 2.0, "text": "Hello"}]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+        cache_files = list((tmp_path / "cache").glob("*.json"))
+        assert len(cache_files) == 1, "Expected exactly one cache file"
+
+    def test_cache_hit_skips_whisper(self, tmp_path):
+        """On second run with same file, Whisper is NOT called."""
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = self._make_config_with_cache(tmp_path)
+
+        whisper_segments = [{"start": 0.0, "end": 2.0, "text": "Cached segment"}]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        # First run — populates cache
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+        # Second run — should load from cache
+        with patch("pipeline.transcriber.whisper") as mock_whisper2:
+            mock_whisper2.load_model.return_value = fake_model
+            result = transcribe(config, str(wav))
+
+        mock_whisper2.load_model.assert_not_called()
+        assert len(result.segments) == 1
+        assert result.segments[0].text == "Cached segment"
+
+    def test_cache_hit_logs_correct_message(self, tmp_path, caplog):
+        """Cache hit logs '[Transcriber] Loaded transcript from cache (skipping Whisper)'."""
+        import logging
+
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = self._make_config_with_cache(tmp_path)
+
+        whisper_segments = [{"start": 0.0, "end": 1.0, "text": "Test"}]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        # First run — populate cache
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+        # Second run — should hit cache and log
+        with patch("pipeline.transcriber.whisper") as mock_whisper2:
+            mock_whisper2.load_model.return_value = fake_model
+            with caplog.at_level(logging.INFO, logger="pipeline.transcriber"):
+                transcribe(config, str(wav))
+
+        cache_msgs = [r.message for r in caplog.records if "Loaded transcript from cache" in r.message]
+        assert len(cache_msgs) == 1
+        assert "skipping Whisper" in cache_msgs[0]
+
+    def test_no_cache_flag_forces_retranscription(self, tmp_path):
+        """When use_cache=False, Whisper is always called even if cache exists."""
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = self._make_config_with_cache(tmp_path)
+
+        whisper_segments = [{"start": 0.0, "end": 2.0, "text": "Fresh"}]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        # First run — populate cache
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+        # Second run with use_cache=False — must call Whisper again
+        config.use_cache = False
+        with patch("pipeline.transcriber.whisper") as mock_whisper2:
+            mock_whisper2.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+        mock_whisper2.load_model.assert_called_once()
+
+    def test_cache_key_differs_for_different_models(self, tmp_path):
+        """Different whisper_model values produce different cache files."""
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config_base = Config(
+            work_dir=str(tmp_path),
+            whisper_model="base",
+            cache_dir=str(tmp_path / "cache"),
+            use_cache=True,
+        )
+        config_small = Config(
+            work_dir=str(tmp_path),
+            whisper_model="small",
+            cache_dir=str(tmp_path / "cache"),
+            use_cache=True,
+        )
+
+        whisper_segments = [{"start": 0.0, "end": 1.0, "text": "Hi"}]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config_base, str(wav))
+            transcribe(config_small, str(wav))
+
+        cache_files = list((tmp_path / "cache").glob("*.json"))
+        assert len(cache_files) == 2, "Expected separate cache files for different models"
+
+    def test_cache_written_to_work_dir_on_hit(self, tmp_path):
+        """On a cache hit, transcript.json is still written to work_dir."""
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = self._make_config_with_cache(tmp_path)
+
+        whisper_segments = [{"start": 0.0, "end": 1.0, "text": "Cached"}]
+        fake_model = _make_fake_model(_fake_whisper_result(whisper_segments))
+
+        # First run
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+        # Remove work_dir transcript to confirm it gets re-written on cache hit
+        work_transcript = tmp_path / "transcript.json"
+        work_transcript.unlink()
+        assert not work_transcript.exists()
+
+        # Second run — cache hit should re-write transcript.json
+        with patch("pipeline.transcriber.whisper") as mock_whisper2:
+            mock_whisper2.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+        assert work_transcript.exists(), "transcript.json should be written on cache hit"

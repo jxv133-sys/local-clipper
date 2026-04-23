@@ -4,6 +4,7 @@ Uses faster-whisper (CTranslate2 backend) when available for 4-8x speedup
 over openai-whisper on CPU. Falls back to openai-whisper if not installed.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -25,12 +26,23 @@ except ImportError:
 
 from config import Config
 from pipeline.exceptions import TranscriptionError
-from pipeline.models import Segment, Transcript
+from pipeline.models import Segment, Transcript, WordTimestamp
 
 logger = logging.getLogger(__name__)
 
 
 _VAD_GAP_THRESHOLD = 0.5  # seconds — gaps larger than this count as a silent section
+
+
+def _compute_cache_key(video_path: str, whisper_model: str, file_mtime: float) -> str:
+    """Return a hex digest uniquely identifying a (video_path, model, mtime) triple."""
+    raw = f"{video_path}|{whisper_model}|{file_mtime}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _cache_path(cache_dir: str, key: str) -> str:
+    """Return the full path to the cache file for *key*."""
+    return os.path.join(cache_dir, f"{key}.json")
 
 
 def _get_wav_duration(wav_path: str) -> float:
@@ -122,6 +134,28 @@ def transcribe(config: Config, wav_path: str, progress_callback=None) -> Transcr
     logger.info("Transcriber starting — wav: %s, model: %s", wav_path, config.whisper_model)
     t0 = time.time()
 
+    # ------------------------------------------------------------------
+    # Cache lookup — skip Whisper if a valid cached transcript exists
+    # ------------------------------------------------------------------
+    if config.use_cache:
+        try:
+            mtime = os.path.getmtime(wav_path)
+            key = _compute_cache_key(wav_path, config.whisper_model, mtime)
+            cached_file = _cache_path(config.cache_dir, key)
+            if os.path.exists(cached_file):
+                with open(cached_file, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                transcript = Transcript.from_dict(data)
+                logger.info("[Transcriber] Loaded transcript from cache (skipping Whisper)")
+                # Still write to work_dir so downstream stages can find it
+                transcript_path = os.path.join(config.work_dir, "transcript.json")
+                with open(transcript_path, "w", encoding="utf-8") as fh:
+                    json.dump(transcript.to_dict(), fh, ensure_ascii=False, indent=2)
+                return transcript
+        except Exception:
+            # Non-fatal — fall through to normal transcription
+            pass
+
     if _FASTER_WHISPER_AVAILABLE:
         segments = _transcribe_faster_whisper(config, wav_path, progress_callback)
     else:
@@ -141,6 +175,21 @@ def transcribe(config: Config, wav_path: str, progress_callback=None) -> Transcr
     transcript_path = os.path.join(config.work_dir, "transcript.json")
     with open(transcript_path, "w", encoding="utf-8") as fh:
         json.dump(transcript.to_dict(), fh, ensure_ascii=False, indent=2)
+
+    # ------------------------------------------------------------------
+    # Cache write — persist transcript so future runs can skip Whisper
+    # ------------------------------------------------------------------
+    if config.use_cache:
+        try:
+            mtime = os.path.getmtime(wav_path)
+            key = _compute_cache_key(wav_path, config.whisper_model, mtime)
+            cached_file = _cache_path(config.cache_dir, key)
+            os.makedirs(config.cache_dir, exist_ok=True)
+            with open(cached_file, "w", encoding="utf-8") as fh:
+                json.dump(transcript.to_dict(), fh, ensure_ascii=False, indent=2)
+        except Exception:
+            # Non-fatal — caching is best-effort
+            pass
 
     elapsed = time.time() - t0
     if segments:
@@ -187,6 +236,9 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
     except Exception:
         audio_duration = None
 
+    # Resolve language: None means auto-detect (Whisper default)
+    language = None if config.language == "auto" else config.language
+
     # num_workers is not supported in all versions — use beam_size for speed
     raw_segments, _info = model.transcribe(
         wav_path,
@@ -196,6 +248,7 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
             min_silence_duration_ms=500,
         ),
         beam_size=1,              # greedy decoding — faster, minimal accuracy loss
+        language=language,
     )
 
     # faster-whisper returns a generator — consume it and track progress
@@ -203,10 +256,19 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
     last_reported_pct = 10
     
     for seg in raw_segments:
+        words: list[WordTimestamp] = []
+        if seg.words:
+            for w in seg.words:
+                words.append(WordTimestamp(
+                    word=w.word,
+                    start=float(w.start),
+                    end=float(w.end),
+                ))
         segments.append(Segment(
             start=float(seg.start),
             end=float(seg.end),
             text=seg.text,
+            words=words,
         ))
         
         # Report progress based on how far through the audio we've transcribed
@@ -246,7 +308,10 @@ def _transcribe_openai_whisper(config: Config, wav_path: str, progress_callback=
     if progress_callback:
         progress_callback(15)
 
-    result = model.transcribe(wav_path, word_timestamps=True)
+    # Resolve language: None means auto-detect (Whisper default)
+    language = None if config.language == "auto" else config.language
+
+    result = model.transcribe(wav_path, word_timestamps=True, language=language)
 
     # Report completion
     if progress_callback:

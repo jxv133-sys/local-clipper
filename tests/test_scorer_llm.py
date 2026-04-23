@@ -899,3 +899,109 @@ class TestLLMAudioGate:
             f"At audio=0.0, score {score:.6f} should equal {expected:.6f} "
             f"(LLM fully suppressed by gate)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — _check_llm_model_available (lightweight HTTP probe)
+# ---------------------------------------------------------------------------
+
+class TestCheckLLMModelAvailable:
+    """Tests for the lightweight /api/tags availability probe."""
+
+    def _make_config(self, llm_endpoint: str = "http://localhost:11434/api/generate", llm_model: str = "llama3") -> Config:
+        cfg = Config(work_dir="/tmp/test")
+        cfg.llm_endpoint = llm_endpoint
+        cfg.llm_model = llm_model
+        return cfg
+
+    def _mock_tags_response(self, models: list, status_code: int = 200) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = {"models": [{"name": m} for m in models]}
+        return mock_resp
+
+    def test_model_found_exact_match(self) -> None:
+        """Model name matches exactly → returns True."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_model="llama3")
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["llama3"])):
+            assert _check_llm_model_available(cfg) is True
+
+    def test_model_found_with_tag_suffix(self) -> None:
+        """Model in tags has :latest suffix but config has bare name → returns True."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_model="llama3")
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["llama3:latest"])):
+            assert _check_llm_model_available(cfg) is True
+
+    def test_model_not_found_returns_false(self) -> None:
+        """Model not in tags list → returns False."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_model="llama3")
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["mistral", "phi3"])):
+            assert _check_llm_model_available(cfg) is False
+
+    def test_non_200_response_assumes_available(self) -> None:
+        """Non-200 HTTP response → assume available (graceful fallback)."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config()
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response([], status_code=404)):
+            assert _check_llm_model_available(cfg) is True
+
+    def test_connection_error_assumes_available(self) -> None:
+        """Connection error → assume available (graceful fallback)."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config()
+        with patch("pipeline.scorer.requests.get", side_effect=requests.ConnectionError("refused")):
+            assert _check_llm_model_available(cfg) is True
+
+    def test_timeout_assumes_available(self) -> None:
+        """Timeout → assume available (graceful fallback)."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config()
+        with patch("pipeline.scorer.requests.get", side_effect=requests.Timeout("timed out")):
+            assert _check_llm_model_available(cfg) is True
+
+    def test_uses_get_not_post(self) -> None:
+        """Probe uses GET, not POST (no inference request sent)."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_model="llama3")
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["llama3"])) as mock_get, \
+             patch("pipeline.scorer.requests.post") as mock_post:
+            _check_llm_model_available(cfg)
+        mock_get.assert_called_once()
+        mock_post.assert_not_called()
+
+    def test_probes_api_tags_endpoint(self) -> None:
+        """GET is sent to <base_url>/api/tags, not /api/generate."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_endpoint="http://localhost:11434/api/generate", llm_model="llama3")
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["llama3"])) as mock_get:
+            _check_llm_model_available(cfg)
+        called_url = mock_get.call_args[0][0]
+        assert called_url == "http://localhost:11434/api/tags"
+
+    def test_short_timeout_used(self) -> None:
+        """Probe uses a short timeout (≤ 5 seconds)."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_model="llama3")
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["llama3"])) as mock_get:
+            _check_llm_model_available(cfg)
+        timeout = mock_get.call_args.kwargs.get("timeout")
+        assert timeout is not None and timeout <= 5, f"Expected short timeout, got {timeout}"
+
+    def test_non_ollama_endpoint_assumes_available(self) -> None:
+        """Endpoint not ending in /api/generate → skip probe, assume available."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_endpoint="http://some-other-llm/v1/completions")
+        with patch("pipeline.scorer.requests.get") as mock_get:
+            result = _check_llm_model_available(cfg)
+        mock_get.assert_not_called()
+        assert result is True
+
+    def test_config_model_with_tag_suffix_matches(self) -> None:
+        """Config model with :tag suffix (e.g. llama3:8b) matches llama3:8b in tags."""
+        from pipeline.scorer import _check_llm_model_available
+        cfg = self._make_config(llm_model="llama3:8b")
+        with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["llama3:8b", "mistral:latest"])):
+            assert _check_llm_model_available(cfg) is True

@@ -54,7 +54,7 @@ def test_transcript_to_dict_single_segment() -> None:
     seg = Segment(start=1.0, end=2.5, text="hello world")
     t = Transcript(segments=[seg])
     d = t.to_dict()
-    assert d == {"segments": [{"start": 1.0, "end": 2.5, "text": "hello world"}]}
+    assert d == {"segments": [{"start": 1.0, "end": 2.5, "text": "hello world", "words": []}]}
 
 
 def test_transcript_from_dict_empty() -> None:
