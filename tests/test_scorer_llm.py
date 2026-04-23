@@ -199,13 +199,90 @@ class TestComputeLLMScore:
                 compute_llm_score_with_context(config, 2, segs)
 
     def test_timeout_raises_llm_scoring_error(self) -> None:
-        """requests.Timeout → LLMScoringError raised."""
+        """Both attempts time out → LLMScoringError raised (falls back to 0.0 via caller)."""
         config = make_config(llm_enabled=True)
         segs = self._make_segments()
 
         with patch("pipeline.scorer.requests.post", side_effect=requests.Timeout("timed out")):
             with pytest.raises(LLMScoringError, match="unreachable"):
                 compute_llm_score_with_context(config, 2, segs)
+
+    def test_first_timeout_retries_and_succeeds(self) -> None:
+        """First attempt times out, second attempt succeeds → returns the score."""
+        config = make_config(llm_enabled=True)
+        segs = self._make_segments()
+        response_text = "SCORE: 7\nTITLE: Great Clip\nDESCRIPTION: Nice moment.\nTAGS: #shorts"
+
+        mock_resp = self._mock_response(response_text)
+        side_effects = [requests.Timeout("timed out"), mock_resp]
+
+        with patch("pipeline.scorer.requests.post", side_effect=side_effects) as mock_post:
+            score, meta = compute_llm_score_with_context(config, 2, segs)
+
+        assert abs(score - 0.7) < 1e-9
+        # First call uses 30s timeout, retry uses 15s timeout
+        assert mock_post.call_count == 2
+        assert mock_post.call_args_list[0][1]["timeout"] == 30
+        assert mock_post.call_args_list[1][1]["timeout"] == 15
+
+    def test_retry_log_message_emitted(self, caplog) -> None:
+        """On first timeout, the retry log message is emitted."""
+        config = make_config(llm_enabled=True)
+        segs = self._make_segments()
+        response_text = "SCORE: 5\nTITLE: OK\nDESCRIPTION: Fine.\nTAGS: #shorts"
+
+        mock_resp = self._mock_response(response_text)
+        side_effects = [requests.Timeout("timed out"), mock_resp]
+
+        with caplog.at_level(logging.WARNING):
+            with patch("pipeline.scorer.requests.post", side_effect=side_effects):
+                compute_llm_score_with_context(config, 2, segs)
+
+        assert any("retrying (attempt 2/2)" in r.message for r in caplog.records)
+
+    def test_both_timeouts_falls_back_to_zero(self, tmp_path) -> None:
+        """Both attempts time out → score_segments falls back to llm_score=0.0."""
+        wav_path = make_wav(tmp_path)
+        config = make_config(
+            llm_enabled=True,
+            text_weight=0.3,
+            audio_weight=0.4,
+            llm_weight=0.3,
+        )
+        segments = [make_segment("Some text.", 0.0, 1.0)]
+        transcript = Transcript(segments=segments)
+
+        with patch("pipeline.scorer.requests.post", side_effect=requests.Timeout("timed out")), \
+             patch("pipeline.scorer._check_llm_model_available", return_value=True):
+            result = score_segments(config, transcript, wav_path)
+
+        assert result[0].llm_score == 0.0
+
+    def test_connection_error_no_retry_falls_back_to_zero(self, tmp_path) -> None:
+        """Connection error → no retry, score_segments falls back to llm_score=0.0."""
+        wav_path = make_wav(tmp_path)
+        config = make_config(
+            llm_enabled=True,
+            text_weight=0.3,
+            audio_weight=0.4,
+            llm_weight=0.3,
+        )
+        segments = [make_segment("Some text.", 0.0, 1.0)]
+        transcript = Transcript(segments=segments)
+
+        call_count = {"n": 0}
+
+        def _conn_error(*args, **kwargs):
+            call_count["n"] += 1
+            raise requests.ConnectionError("refused")
+
+        with patch("pipeline.scorer.requests.post", side_effect=_conn_error), \
+             patch("pipeline.scorer._check_llm_model_available", return_value=True):
+            result = score_segments(config, transcript, wav_path)
+
+        # Only one POST call — no retry on ConnectionError
+        assert call_count["n"] == 1
+        assert result[0].llm_score == 0.0
 
     def test_context_window_included_in_prompt(self) -> None:
         """The prompt sent to the LLM includes surrounding context segments."""
