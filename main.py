@@ -189,7 +189,19 @@ def run_pipeline(video_path: str, config: Config) -> list[str]:
     wav_path = _run_stage("AudioExtractor", extract_audio, config, video_path)
 
     # Stage 2: Transcription
-    transcript = _run_stage("Transcriber", transcribe, config, wav_path)
+    print("[Transcriber] Starting...", flush=True)
+    t0 = time.time()
+    last_pct = [0]  # mutable so the closure can update it
+
+    def _transcription_progress(pct: int) -> None:
+        if pct > last_pct[0]:
+            filled = pct // 5          # 0-20 blocks
+            bar = "█" * filled + "░" * (20 - filled)
+            print(f"\r[Transcriber] [{bar}] {pct}%  ", end="", flush=True)
+            last_pct[0] = pct
+
+    transcript = transcribe(config, wav_path, progress_callback=_transcription_progress)
+    print(f"\r[Transcriber] Done in {time.time() - t0:.1f}s — {len(transcript.segments)} segment(s)          ", flush=True)
 
     if not transcript.segments:
         print("Warning: No speech detected in video. Scoring will rely on audio energy only.",
@@ -298,7 +310,6 @@ def main() -> None:
     config = build_config(args, work_dir)
 
     print(f"Input:      {args.input_video}" + (f"  (from {args.url})" if args.url else ""))
-    print(f"Output dir: {config.output_dir}")
     print(f"Output dir: {config.output_dir}")
     print(f"Whisper:    {config.whisper_model}")
     print(f"Top N:      {config.top_n_clips}")
