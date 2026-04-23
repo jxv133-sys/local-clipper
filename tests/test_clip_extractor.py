@@ -21,6 +21,7 @@ from pipeline.models import Clip
 def make_config(tmp_path) -> Config:
     cfg = Config(work_dir=str(tmp_path))
     cfg.output_dir = str(tmp_path / "output")
+    cfg.trim_silence = False  # disable by default so existing tests aren't affected
     return cfg
 
 
@@ -334,3 +335,136 @@ class TestGenerateThumbnail:
             result = generate_thumbnail(clip_path)
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# trim_clip_silence tests
+# ---------------------------------------------------------------------------
+
+class TestTrimClipSilence:
+    """Tests for trim_clip_silence()."""
+
+    def test_replaces_original_when_trimmed_duration_above_min(self, tmp_path):
+        """Replaces the original clip when trimmed duration >= min_clip_duration."""
+        from pipeline.clip_extractor import trim_clip_silence
+
+        config = make_config(tmp_path)
+        config.min_clip_duration = 20.0
+        clip_path = str(tmp_path / "clip_1_10s.mp4")
+        open(clip_path, "w").close()  # create dummy file
+
+        with patch("subprocess.run") as mock_run, \
+             patch("os.replace") as mock_replace, \
+             patch("pipeline.clip_extractor._probe_duration") as mock_probe:
+            mock_run.return_value = completed(0)
+            # original duration, then trimmed duration
+            mock_probe.side_effect = [25.0, 22.0]
+            result = trim_clip_silence(clip_path, config, clip_rank=1)
+
+        mock_replace.assert_called_once()
+        assert result == clip_path
+
+    def test_keeps_original_when_trimmed_below_min_clip_duration(self, tmp_path):
+        """Keeps original clip when trimmed duration < min_clip_duration."""
+        from pipeline.clip_extractor import trim_clip_silence
+
+        config = make_config(tmp_path)
+        config.min_clip_duration = 30.0
+        clip_path = str(tmp_path / "clip_1_10s.mp4")
+        open(clip_path, "w").close()
+
+        trimmed_path = str(tmp_path / "clip_1_10s_trimmed.mp4")
+        open(trimmed_path, "w").close()
+
+        with patch("subprocess.run") as mock_run, \
+             patch("pipeline.clip_extractor._probe_duration") as mock_probe:
+            mock_run.return_value = completed(0)
+            # trimmed duration is below min_clip_duration
+            mock_probe.side_effect = [25.0, 15.0]
+            result = trim_clip_silence(clip_path, config, clip_rank=1)
+
+        # Original path returned unchanged
+        assert result == clip_path
+        # Trimmed file should be removed
+        assert not os.path.exists(trimmed_path)
+
+    def test_returns_original_when_ffmpeg_fails(self, tmp_path):
+        """Returns original path when ffmpeg silenceremove fails."""
+        from pipeline.clip_extractor import trim_clip_silence
+
+        config = make_config(tmp_path)
+        config.min_clip_duration = 20.0
+        clip_path = str(tmp_path / "clip_1_10s.mp4")
+        open(clip_path, "w").close()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = completed(1, stderr="ffmpeg error")
+            result = trim_clip_silence(clip_path, config, clip_rank=1)
+
+        assert result == clip_path
+
+    def test_returns_original_when_probe_fails(self, tmp_path):
+        """Returns original path when ffprobe cannot determine trimmed duration."""
+        from pipeline.clip_extractor import trim_clip_silence
+
+        config = make_config(tmp_path)
+        config.min_clip_duration = 20.0
+        clip_path = str(tmp_path / "clip_1_10s.mp4")
+        open(clip_path, "w").close()
+
+        trimmed_path = str(tmp_path / "clip_1_10s_trimmed.mp4")
+        open(trimmed_path, "w").close()
+
+        with patch("subprocess.run") as mock_run, \
+             patch("pipeline.clip_extractor._probe_duration", return_value=None):
+            mock_run.return_value = completed(0)
+            result = trim_clip_silence(clip_path, config, clip_rank=1)
+
+        assert result == clip_path
+
+    def test_returns_original_on_unexpected_exception(self, tmp_path):
+        """Returns original path gracefully when an unexpected exception occurs."""
+        from pipeline.clip_extractor import trim_clip_silence
+
+        config = make_config(tmp_path)
+        config.min_clip_duration = 20.0
+        clip_path = str(tmp_path / "clip_1_10s.mp4")
+        open(clip_path, "w").close()
+
+        with patch("subprocess.run", side_effect=OSError("no ffmpeg")):
+            result = trim_clip_silence(clip_path, config, clip_rank=1)
+
+        assert result == clip_path
+
+    def test_trim_silence_disabled_skips_trim(self, tmp_path):
+        """When config.trim_silence=False, trim_clip_silence is not called during extraction."""
+        config = make_config(tmp_path)
+        config.trim_silence = False
+        clip = make_clip(rank=1, start=10.0, end=40.0)
+
+        with patch("subprocess.run") as mock_run, \
+             patch("pipeline.clip_extractor.trim_clip_silence") as mock_trim:
+            mock_run.side_effect = [
+                completed(0),                    # ffmpeg stream-copy
+                completed(0, stdout="30.0\n"),   # ffprobe
+            ]
+            extract_clips(config, [clip], "/fake/video.mp4")
+
+        mock_trim.assert_not_called()
+
+    def test_trim_silence_enabled_calls_trim(self, tmp_path):
+        """When config.trim_silence=True, trim_clip_silence is called after extraction."""
+        config = make_config(tmp_path)
+        config.trim_silence = True
+        clip = make_clip(rank=1, start=10.0, end=40.0)
+
+        with patch("subprocess.run") as mock_run, \
+             patch("pipeline.clip_extractor.trim_clip_silence") as mock_trim:
+            mock_run.side_effect = [
+                completed(0),                    # ffmpeg stream-copy
+                completed(0, stdout="30.0\n"),   # ffprobe
+            ]
+            mock_trim.return_value = str(tmp_path / "output" / "clip_1_10s.mp4")
+            extract_clips(config, [clip], "/fake/video.mp4")
+
+        mock_trim.assert_called_once()

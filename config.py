@@ -140,6 +140,9 @@ class Config:
     use_cache: bool = True           # Set to False to force re-transcription (--no-cache)
     cache_dir: str = field(default_factory=lambda: os.path.expanduser("~/.cache/local-clipper"))
 
+    # Silence trimming at clip boundaries
+    trim_silence: bool = True        # Set to False to skip silence trimming (--no-trim-silence)
+
     # Subtitles
     burn_subtitles: bool = True      # Set to False to skip burning captions into clips
 

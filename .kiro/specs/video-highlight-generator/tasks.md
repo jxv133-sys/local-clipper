@@ -119,7 +119,7 @@
 ## Output Quality
 
 
-- [~] 18. Silence trimming at clip boundaries
+- [x] 18. Silence trimming at clip boundaries
   - Clips often start or end on dead air because boundaries are snapped to segment timestamps
   - After extraction, run `ffmpeg -af silenceremove` to trim leading/trailing silence > 0.5s
   - Only trim if the resulting duration stays above `min_clip_duration`

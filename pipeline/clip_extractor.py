@@ -15,6 +15,91 @@ from pipeline.models import Clip
 logger = logging.getLogger(__name__)
 
 
+def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str:
+    """Trim leading/trailing silence from a clip using ffmpeg silenceremove.
+
+    Runs ``ffmpeg -af silenceremove`` to remove silence > 0.5 s at the start
+    and end of the clip.  The trimmed version replaces the original only if
+    the resulting duration is >= ``config.min_clip_duration``.
+
+    Args:
+        clip_path: Path to the clip ``.mp4`` file.
+        config: Pipeline configuration (``min_clip_duration`` is used).
+        clip_rank: Clip rank number for log messages.
+
+    Returns:
+        The path to the (possibly trimmed) clip.  Returns the original path
+        unchanged if trimming would shorten the clip below ``min_clip_duration``
+        or if ffmpeg fails.
+    """
+    stem, ext = os.path.splitext(clip_path)
+    trimmed_path = f"{stem}_trimmed{ext}"
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", clip_path,
+                "-af",
+                (
+                    "silenceremove="
+                    "start_periods=1:start_silence=0.5:start_threshold=-50dB:"
+                    "stop_periods=1:stop_silence=0.5:stop_threshold=-50dB"
+                ),
+                trimmed_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "  Clip #%d: silence trim ffmpeg failed — keeping original. stderr: %s",
+                clip_rank, result.stderr.strip(),
+            )
+            return clip_path
+
+        trimmed_duration = _probe_duration(trimmed_path)
+        if trimmed_duration is None:
+            logger.warning("  Clip #%d: silence trim — could not probe trimmed duration, keeping original", clip_rank)
+            try:
+                os.remove(trimmed_path)
+            except OSError:
+                pass
+            return clip_path
+
+        original_duration = _probe_duration(clip_path)
+        if original_duration is None:
+            original_duration = 0.0
+
+        if trimmed_duration < config.min_clip_duration:
+            logger.info(
+                "  Clip #%d: silence trim skipped (would shorten below min_clip_duration)",
+                clip_rank,
+            )
+            try:
+                os.remove(trimmed_path)
+            except OSError:
+                pass
+            return clip_path
+
+        # Replace original with trimmed version
+        os.replace(trimmed_path, clip_path)
+        logger.info(
+            "  Clip #%d: trimmed silence, duration %.1fs → %.1fs",
+            clip_rank, original_duration, trimmed_duration,
+        )
+        return clip_path
+
+    except Exception as exc:
+        logger.warning("  Clip #%d: silence trim error — keeping original: %s", clip_rank, exc)
+        try:
+            os.remove(trimmed_path)
+        except OSError:
+            pass
+        return clip_path
+
+
 def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[int, str]:
     """Extract a single clip and return ``(clip.rank, output_path)``.
 
@@ -67,6 +152,10 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
             ],
             output_path,
         )
+
+    # --- Optional: trim leading/trailing silence ---
+    if config.trim_silence:
+        output_path = trim_clip_silence(output_path, config, clip_rank=clip.rank)
 
     file_size_mb = os.path.getsize(output_path) / (1024 * 1024) if os.path.exists(output_path) else 0.0
     logger.info("  Clip #%d: %s (%.2f MB, %.1fs)", clip.rank, output_path, file_size_mb, time.time() - t0)

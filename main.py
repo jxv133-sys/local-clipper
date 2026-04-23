@@ -166,6 +166,7 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     cfg.burn_subtitles = not args.no_subtitles
     cfg.use_cache = not args.no_cache
     cfg.language = args.language
+    cfg.trim_silence = not args.no_trim_silence
 
     # When LLM is enabled, give it real weight and reduce text/audio proportionally
     if cfg.llm_enabled:
@@ -276,6 +277,8 @@ def main() -> None:
                         help="Skip burning subtitles into clips (SRT files are still written)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Force re-transcription, ignoring any cached transcript")
+    parser.add_argument("--no-trim-silence", action="store_true",
+                        help="Skip trimming leading/trailing silence from extracted clips")
     parser.add_argument("--language", default="auto",
                         help="Transcription language code (default: auto). E.g. 'en', 'es', 'fr'")
 
