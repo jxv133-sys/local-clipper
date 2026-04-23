@@ -32,97 +32,93 @@ class Hook:
 
 def _call_llm_for_hook(llm_endpoint: str, llm_model: str, text: str) -> tuple[float, str]:
     """Call the LLM to detect hooks in text.
-    
-    Args:
-        llm_endpoint: Ollama API endpoint
-        llm_model: Model name to use
-        text: Text to analyze
-        
+
+    Uses a minimal prompt optimised for small models (1B–3B parameters):
+    asks only for a single integer score 1-10, then derives hook_type
+    locally from heuristics. This avoids the JSON-copying problem where
+    small models echo the example values instead of reasoning.
+
     Returns:
-        (hook_score, hook_type) where score is 0.0-1.0 and type is one of:
-        question, contrarian, reveal, emotional, none
+        (hook_score 0.0-1.0, hook_type str)
     """
     import requests
-    
+
+    # Minimal prompt — small models handle single-value output far better
+    # than multi-field JSON. We ask for one integer and nothing else.
     prompt = (
-        "You are a viral content classifier. Analyze the text below and determine "
-        "how likely it would stop a scrolling user within 3 seconds.\n\n"
-        "SCORING GUIDE:\n"
-        "  0.0-0.2  Boring filler, greetings, generic commentary — no hook\n"
-        "  0.3-0.4  Mildly interesting but forgettable\n"
-        "  0.5-0.6  Decent hook — some curiosity or engagement\n"
-        "  0.7-0.8  Strong hook — clear tension, surprise, or emotion\n"
-        "  0.9-1.0  Exceptional — would definitely stop a scroll\n\n"
-        "HOOK TYPES (pick the best fit):\n"
-        "  question   — poses a question or creates curiosity (e.g. 'What if I told you...')\n"
-        "  contrarian — challenges a common belief (e.g. 'Everyone is wrong about...')\n"
-        "  reveal     — teases a surprising fact or outcome (e.g. 'Turns out...')\n"
-        "  emotional  — strong emotion: shock, joy, anger, fear (e.g. 'I can't believe...')\n"
-        "  none       — no meaningful hook present\n\n"
-        f"TEXT TO ANALYZE:\n\"{text}\"\n\n"
-        "Respond with ONLY a JSON object. No explanation, no preamble.\n"
-        "Format: {\"hook_score\": <number 0.0-1.0>, \"hook_type\": <one of the types above>}\n"
-        "Example for boring text: {\"hook_score\": 0.1, \"hook_type\": \"none\"}\n"
-        "Example for strong reveal: {\"hook_score\": 0.8, \"hook_type\": \"reveal\"}"
+        "Rate how likely this text would stop someone scrolling social media.\n"
+        "Score 1 (boring) to 10 (would definitely stop scrolling).\n\n"
+        f"Text: {text}\n\n"
+        "Reply with ONLY a single integer from 1 to 10. Nothing else."
     )
 
     try:
         payload = {"model": llm_model, "prompt": prompt, "stream": False}
         response = requests.post(llm_endpoint, json=payload, timeout=30)
         response_data = response.json()
-        raw_response = str(response_data.get("response", ""))
-        
-        if not raw_response.strip():
+        raw_response = str(response_data.get("response", "")).strip()
+
+        if not raw_response:
             logger.warning("LLM returned empty response for hook detection")
             return 0.0, "none"
-        
-        # Extract JSON — try strict match first, then looser search
-        json_match = re.search(r'\{[^{}]+\}', raw_response)
-        if json_match:
-            try:
-                hook_data = json.loads(json_match.group(0))
-            except json.JSONDecodeError:
-                # Try extracting score and type individually as fallback
-                score_match = re.search(r'"hook_score"\s*:\s*([0-9.]+)', raw_response)
-                type_match = re.search(r'"hook_type"\s*:\s*"([^"]+)"', raw_response)
-                if score_match:
-                    hook_score = max(0.0, min(1.0, float(score_match.group(1))))
-                    hook_type = type_match.group(1) if type_match else "none"
-                    valid_types = {"question", "contrarian", "reveal", "emotional", "none"}
-                    if hook_type not in valid_types:
-                        hook_type = "none"
-                    return hook_score, hook_type
-                logger.warning("Could not parse JSON from hook response: %r", raw_response[:200])
-                return 0.0, "none"
 
-            hook_score = float(hook_data.get("hook_score", 0.0))
-            hook_type = str(hook_data.get("hook_type", "none")).lower().strip()
-            
-            # Validate
-            hook_score = max(0.0, min(1.0, hook_score))
-            valid_types = {"question", "contrarian", "reveal", "emotional", "none"}
-            if hook_type not in valid_types:
-                hook_type = "none"
-            
-            return hook_score, hook_type
-        else:
-            # Last resort: try to pull numbers and types from free text
-            score_match = re.search(r'(?:score|hook_score)[^\d]*([0-9]\.[0-9]+)', raw_response, re.I)
-            type_match = re.search(r'\b(question|contrarian|reveal|emotional|none)\b', raw_response, re.I)
-            if score_match:
-                hook_score = max(0.0, min(1.0, float(score_match.group(1))))
-                hook_type = type_match.group(1).lower() if type_match else "none"
-                logger.debug("Hook parsed from free text: score=%.2f type=%s", hook_score, hook_type)
-                return hook_score, hook_type
-            logger.warning("Could not parse hook response: %r", raw_response[:200])
+        # Extract the first integer from the response
+        int_match = re.search(r'\b(10|[1-9])\b', raw_response)
+        if not int_match:
+            logger.debug("No integer found in hook response: %r", raw_response[:100])
             return 0.0, "none"
-            
+
+        score_int = int(int_match.group(1))
+        hook_score = (score_int - 1) / 9.0  # map 1-10 → 0.0-1.0
+
+        # Derive hook type locally from text heuristics (no LLM needed)
+        hook_type = _classify_hook_type(text)
+
+        logger.debug("Hook score=%d/10 (%.2f) type=%s for: %r",
+                     score_int, hook_score, hook_type, text[:60])
+        return hook_score, hook_type
+
     except (requests.ConnectionError, requests.Timeout) as exc:
         logger.warning("LLM endpoint unreachable for hook detection: %s", exc)
         return 0.0, "none"
-    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+    except (ValueError, KeyError) as exc:
         logger.warning("Failed to parse LLM hook response: %s", exc)
         return 0.0, "none"
+
+
+def _classify_hook_type(text: str) -> str:
+    """Classify hook type from text heuristics — no LLM needed.
+
+    Returns one of: question, contrarian, reveal, emotional, none
+    """
+    t = text.lower()
+
+    # Question: ends with ? or contains question words
+    if "?" in t:
+        return "question"
+    if any(w in t for w in ("what if", "how did", "why did", "who would", "can you", "do you")):
+        return "question"
+
+    # Contrarian: challenges common beliefs
+    if any(p in t for p in ("everyone is wrong", "actually", "the truth is",
+                             "nobody talks about", "stop doing", "you've been",
+                             "most people don't", "unpopular opinion")):
+        return "contrarian"
+
+    # Reveal: surprising fact or outcome
+    if any(p in t for p in ("turns out", "it turns out", "found out", "discovered",
+                             "revealed", "the real reason", "secret", "never knew",
+                             "you won't believe", "shocked", "plot twist")):
+        return "reveal"
+
+    # Emotional: strong reaction words
+    if any(p in t for p in ("i can't believe", "oh my god", "no way", "insane",
+                             "crazy", "unbelievable", "incredible", "amazing",
+                             "terrible", "awful", "love", "hate", "scared",
+                             "crying", "laughing", "hilarious", "devastating")):
+        return "emotional"
+
+    return "none"
 
 
 def detect_hooks(

@@ -38,58 +38,54 @@ def segments():
 
 class TestCallLLMForHook:
     def test_successful_hook_detection(self):
-        """Test successful hook detection with valid JSON response."""
+        """Test successful hook detection with integer score response."""
         with patch('requests.post') as mock_post:
             mock_response = MagicMock()
-            mock_response.json.return_value = {
-                "response": '{"hook_score": 0.85, "hook_type": "question"}'
-            }
+            mock_response.json.return_value = {"response": "8"}
             mock_post.return_value = mock_response
-            
+
             score, hook_type = _call_llm_for_hook(
                 "http://localhost:11434/api/generate",
                 "llama3",
                 "What if I told you something amazing?"
             )
-            
-            assert score == 0.85
-            assert hook_type == "question"
-    
+
+            # 8 on 1-10 scale → (8-1)/9 = 0.777...
+            assert abs(score - 7/9) < 0.01
+            assert hook_type == "question"  # heuristic detects "What if"
+
     def test_score_clamped_to_range(self):
-        """Test that scores outside 0-1 are clamped."""
+        """Test that scores stay in 0-1 range."""
         with patch('requests.post') as mock_post:
             mock_response = MagicMock()
-            mock_response.json.return_value = {
-                "response": '{"hook_score": 1.5, "hook_type": "reveal"}'
-            }
+            mock_response.json.return_value = {"response": "10"}
             mock_post.return_value = mock_response
-            
+
             score, hook_type = _call_llm_for_hook(
                 "http://localhost:11434/api/generate",
                 "llama3",
                 "Test text"
             )
-            
-            assert score == 1.0  # Clamped to max
-            assert hook_type == "reveal"
-    
+
+            assert score == 1.0  # 10 → (10-1)/9 = 1.0
+            assert 0.0 <= score <= 1.0
+
     def test_invalid_hook_type_defaults_to_none(self):
-        """Test that invalid hook types default to 'none'."""
+        """Test that hook type is derived from heuristics, not LLM."""
         with patch('requests.post') as mock_post:
             mock_response = MagicMock()
-            mock_response.json.return_value = {
-                "response": '{"hook_score": 0.7, "hook_type": "invalid_type"}'
-            }
+            mock_response.json.return_value = {"response": "7"}
             mock_post.return_value = mock_response
-            
+
             score, hook_type = _call_llm_for_hook(
                 "http://localhost:11434/api/generate",
                 "llama3",
-                "Test text"
+                "Just some plain text with no hook signals"
             )
-            
-            assert score == 0.7
-            assert hook_type == "none"
+
+            # 7 → (7-1)/9 = 0.666...
+            assert abs(score - 6/9) < 0.01
+            assert hook_type == "none"  # no heuristic patterns match
     
     def test_empty_response_returns_zero(self):
         """Test that empty LLM response returns 0.0 score."""
