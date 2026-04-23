@@ -9,7 +9,7 @@ import pytest
 from config import Config
 from pipeline.exceptions import TranscriptionError
 from pipeline.models import Segment, Transcript
-from pipeline.transcriber import transcribe
+from pipeline.transcriber import _clear_model_cache, transcribe
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,14 @@ def _make_fake_model(result: dict) -> MagicMock:
 def use_openai_whisper_backend():
     with patch("pipeline.transcriber._FASTER_WHISPER_AVAILABLE", False):
         yield
+
+
+@pytest.fixture(autouse=True)
+def clear_model_cache():
+    """Ensure the in-memory model cache is empty before and after each test."""
+    _clear_model_cache()
+    yield
+    _clear_model_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -594,13 +602,14 @@ class TestTranscriptCaching:
             mock_whisper.load_model.return_value = fake_model
             transcribe(config, str(wav))
 
-        # Second run with use_cache=False — must call Whisper again
+        # Second run with use_cache=False — must run transcription again
         config.use_cache = False
         with patch("pipeline.transcriber.whisper") as mock_whisper2:
             mock_whisper2.load_model.return_value = fake_model
-            transcribe(config, str(wav))
+            result = transcribe(config, str(wav))
 
-        mock_whisper2.load_model.assert_called_once()
+        # Transcription ran again (model.transcribe was called a second time)
+        assert fake_model.transcribe.call_count == 2
 
     def test_cache_key_differs_for_different_models(self, tmp_path):
         """Different whisper_model values produce different cache files."""
@@ -657,3 +666,65 @@ class TestTranscriptCaching:
             transcribe(config, str(wav))
 
         assert work_transcript.exists(), "transcript.json should be written on cache hit"
+
+
+# ---------------------------------------------------------------------------
+# Model memory cache tests
+# ---------------------------------------------------------------------------
+
+class TestModelMemoryCache:
+    """Verify the in-memory model cache avoids reloading on subsequent jobs."""
+
+    def test_model_loaded_only_once_across_two_jobs(self, tmp_path):
+        """whisper.load_model is called once; second job reuses the cached model."""
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = _make_config(tmp_path)
+        fake_model = _make_fake_model(_fake_whisper_result([{"start": 0.0, "end": 1.0, "text": "Hi"}]))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+            transcribe(config, str(wav))
+
+        mock_whisper.load_model.assert_called_once()
+
+    def test_cache_hit_logs_skipping_reload(self, tmp_path, caplog):
+        """Second job logs '[Transcriber] Using cached model (skipping reload)'."""
+        import logging
+
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = _make_config(tmp_path)
+        config.use_cache = False  # disable transcript cache so model loading is always attempted
+        fake_model = _make_fake_model(_fake_whisper_result([{"start": 0.0, "end": 1.0, "text": "Hi"}]))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))  # first job — populates model cache
+            with caplog.at_level(logging.INFO, logger="pipeline.transcriber"):
+                transcribe(config, str(wav))  # second job — model cache hit
+
+        cache_msgs = [r.message for r in caplog.records if "Using cached model" in r.message]
+        assert len(cache_msgs) == 1
+        assert "skipping reload" in cache_msgs[0]
+
+    def test_different_model_names_load_separately(self, tmp_path):
+        """Changing whisper_model triggers a fresh load."""
+        wav = tmp_path / "audio.wav"
+        _write_minimal_wav(wav)
+
+        config = _make_config(tmp_path)
+        config.whisper_model = "base"
+        fake_model = _make_fake_model(_fake_whisper_result([]))
+
+        with patch("pipeline.transcriber.whisper") as mock_whisper:
+            mock_whisper.load_model.return_value = fake_model
+            transcribe(config, str(wav))
+
+            config.whisper_model = "small"
+            transcribe(config, str(wav))
+
+        assert mock_whisper.load_model.call_count == 2

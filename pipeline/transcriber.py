@@ -10,6 +10,7 @@ import logging
 import os
 import time
 import wave
+from typing import Any
 
 # Try faster-whisper first (significantly faster on CPU)
 try:
@@ -29,6 +30,15 @@ from pipeline.exceptions import TranscriptionError
 from pipeline.models import Segment, Transcript, WordTimestamp
 
 logger = logging.getLogger(__name__)
+
+# Module-level model cache: keyed on (backend, model_name) → loaded model object.
+# Persists across jobs in the same web server process, avoiding repeated disk loads.
+_MODEL_CACHE: dict[tuple[str, str], Any] = {}
+
+
+def _clear_model_cache() -> None:
+    """Clear the in-memory model cache. Intended for use in tests."""
+    _MODEL_CACHE.clear()
 
 
 _VAD_GAP_THRESHOLD = 0.5  # seconds — gaps larger than this count as a silent section
@@ -220,11 +230,17 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
     try:
         # int8 quantization gives ~2x additional speedup on CPU with minimal
         # accuracy loss for highlight detection purposes
-        model = FasterWhisperModel(
-            config.whisper_model,
-            device="cpu",
-            compute_type="int8",
-        )
+        cache_key = ("faster-whisper", config.whisper_model)
+        if cache_key in _MODEL_CACHE:
+            logger.info("[Transcriber] Using cached model (skipping reload)")
+            model = _MODEL_CACHE[cache_key]
+        else:
+            model = FasterWhisperModel(
+                config.whisper_model,
+                device="cpu",
+                compute_type="int8",
+            )
+            _MODEL_CACHE[cache_key] = model
     except Exception as exc:
         raise TranscriptionError(
             f"Failed to load faster-whisper model '{config.whisper_model}': {exc}"
@@ -298,7 +314,13 @@ def _transcribe_openai_whisper(config: Config, wav_path: str, progress_callback=
         progress_callback: Optional callback(percentage) for progress updates.
     """
     try:
-        model = whisper.load_model(config.whisper_model)
+        cache_key = ("openai-whisper", config.whisper_model)
+        if cache_key in _MODEL_CACHE:
+            logger.info("[Transcriber] Using cached model (skipping reload)")
+            model = _MODEL_CACHE[cache_key]
+        else:
+            model = whisper.load_model(config.whisper_model)
+            _MODEL_CACHE[cache_key] = model
     except Exception as exc:
         raise TranscriptionError(
             f"Failed to load Whisper model '{config.whisper_model}': {exc}"

@@ -105,7 +105,7 @@
   - Limit concurrency to `min(len(clips), 4)` to avoid saturating I/O
   - Preserve rank-ordered output list regardless of completion order
 
-- [~] 15. Cache Whisper model in memory for web server
+- [x] 15. Cache Whisper model in memory for web server
   - The web server reloads the Whisper model from disk on every job, even when the model name hasn't changed
   - Cache the loaded model in a module-level dict keyed on `(model_name, backend)` in `transcriber.py`
   - Invalidate the cache only when the model name changes between jobs
