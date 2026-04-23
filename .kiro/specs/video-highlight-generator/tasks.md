@@ -141,7 +141,7 @@
 
 
 
-- [~] 22. Batch download as zip
+- [x] 22. Batch download as zip
   - Users must download clips one at a time; add a "Download all" button to the results panel
   - New API endpoint: `GET /api/jobs/<job_id>/download-all` — streams a zip of all clips for that job
   - Use Python's `zipfile` module to build the archive in memory and stream it as `application/zip`

@@ -1140,7 +1140,12 @@ function renderClips(clips, jobId) {
     el.innerHTML = '<div class="empty-state">Clips will appear here once a job completes.</div>';
     return;
   }
-  el.innerHTML = clips.map((c, i) => `
+  const downloadAllBtn = clips.length >= 2
+    ? `<div style="margin-bottom:10px">
+        <button class="btn-sm btn-download" onclick="downloadAll('${esc(jobId)}')">⬇ Download All</button>
+       </div>`
+    : '';
+  el.innerHTML = downloadAllBtn + clips.map((c, i) => `
     <div class="clip-card">
       <div class="clip-card-header" onclick="toggleWhy(${i})">
         <div class="clip-rank">${i + 1}</div>
@@ -1198,6 +1203,13 @@ function togglePreview(i, url) {
     video.pause();
     container.classList.remove('open');
   }
+}
+
+/* ================================================================
+   Download all clips as zip
+   ================================================================ */
+function downloadAll(jobId) {
+  window.location.href = `/api/jobs/${jobId}/download-all`;
 }
 
 /* ================================================================

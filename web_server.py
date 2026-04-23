@@ -43,6 +43,9 @@ try:
 except ImportError:
     os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
 
+import io
+import zipfile
+
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from config import Config
@@ -619,6 +622,33 @@ def download_clip(job_id: str, clip_index: int):
         as_attachment=True,
         download_name=os.path.basename(clip_path),
         mimetype="video/mp4",
+    )
+
+
+@app.route("/api/jobs/<job_id>/download-all")
+def download_all_clips(job_id: str):
+    """Stream a zip archive of all clips for a completed job."""
+    job = _get_job(job_id)
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status != JobStatus.DONE:
+        return jsonify({"error": "Job not complete"}), 400
+    if len(job.result_clips) < 2:
+        return jsonify({"error": "Job has fewer than 2 clips"}), 400
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for clip in job.result_clips:
+            clip_path = clip["path"]
+            if os.path.exists(clip_path):
+                zf.write(clip_path, arcname=os.path.basename(clip_path))
+    buf.seek(0)
+
+    zip_name = f"clips_{job_id[:8]}.zip"
+    return Response(
+        buf.read(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=\"{zip_name}\""},
     )
 
 
