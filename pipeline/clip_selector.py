@@ -189,6 +189,7 @@ def select_clips(
     scored_segments: list[ScoredSegment],
     transcript: Transcript,
     video_duration: float,
+    video_path: str | None = None,
 ) -> list[Clip]:
     """
     Rank segments by clip_score, select top N, expand to 20-45s,
@@ -199,6 +200,8 @@ def select_clips(
         scored_segments: Scored transcript segments to select from.
         transcript: Full transcript used for boundary-aligned expansion.
         video_duration: Total duration of the source video in seconds.
+        video_path: Optional path to the source video file. Required when
+            config.snap_to_scene_cuts is True; ignored otherwise.
 
     Returns:
         List of Clip objects sorted by rank (1-based, descending score).
@@ -416,6 +419,42 @@ def select_clips(
     # Step 7b: Transcript deduplication pass — remove clips with near-identical
     # transcript content (Jaccard similarity > dedup_similarity_threshold).
     clips = _dedup_by_transcript(clips, transcript, config.dedup_similarity_threshold)
+
+    # Step 7c: Scene-change aware boundary snapping.
+    # If enabled and a video path is available, snap each clip's start and end
+    # to the nearest I-frame (scene cut) within ±2 seconds.
+    if config.snap_to_scene_cuts and video_path:
+        from pipeline.scene_detector import _detect_scene_cuts, snap_to_nearest_cut  # noqa: PLC0415
+
+        snapped: list[Clip] = []
+        for clip in clips:
+            start_cuts = _detect_scene_cuts(video_path, clip.start, clip.start)
+            end_cuts = _detect_scene_cuts(video_path, clip.end, clip.end)
+            new_start = snap_to_nearest_cut(clip.start, start_cuts)
+            new_end = snap_to_nearest_cut(clip.end, end_cuts)
+            # Clamp to video bounds and ensure ordering is preserved
+            new_start = max(0.0, new_start)
+            new_end = min(video_duration, new_end)
+            if new_start >= new_end:
+                # Snapping produced an invalid range — keep original
+                snapped.append(clip)
+            else:
+                snapped.append(
+                    Clip(
+                        start=new_start,
+                        end=new_end,
+                        score=clip.score,
+                        rank=clip.rank,
+                        segment_indices=clip.segment_indices,
+                        is_audio_spike=clip.is_audio_spike,
+                    )
+                )
+            if new_start != clip.start or new_end != clip.end:
+                logger.info(
+                    "[ClipSelector] Scene-cut snap: %.1fs→%.1fs became %.1fs→%.1fs",
+                    clip.start, clip.end, new_start, new_end,
+                )
+        clips = snapped
 
     # Step 8: Assign 1-based rank by score (descending)
     clips_by_score = sorted(clips, key=lambda c: c.score, reverse=True)

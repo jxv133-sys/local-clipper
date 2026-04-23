@@ -125,7 +125,7 @@
   - Only trim if the resulting duration stays above `min_clip_duration`
   - Add `trim_silence: bool = True` to `Config`; expose as `--no-trim-silence` CLI flag
 
-- [~] 19. Scene-change aware clip boundaries
+- [x] 19. Scene-change aware clip boundaries
   - Clip start/end times are snapped to Whisper segment boundaries, which may land mid-scene
   - Use `ffprobe -show_frames -select_streams v -show_entries frame=pkt_pts_time,pict_type` to detect scene changes near each boundary
   - Snap the boundary to the nearest scene cut within ±2 seconds if one exists

@@ -140,6 +140,13 @@ class Config:
     use_cache: bool = True           # Set to False to force re-transcription (--no-cache)
     cache_dir: str = field(default_factory=lambda: os.path.expanduser("~/.cache/local-clipper"))
 
+    # Scene-change aware clip boundaries
+    # When True, clip start/end times are snapped to the nearest I-frame (scene cut)
+    # within ±2 seconds.  Requires ffprobe to be available and the source video path
+    # to be passed to select_clips.  Defaults to False because ffprobe on the source
+    # video is not always available at clip selection time.
+    snap_to_scene_cuts: bool = False
+
     # Silence trimming at clip boundaries
     trim_silence: bool = True        # Set to False to skip silence trimming (--no-trim-silence)
 
