@@ -393,6 +393,15 @@
     }
     .clip-why.open { display: block; }
 
+    .clip-preview {
+      display: none;
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .clip-preview.open { display: block; }
+    .btn-preview { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+
     /* ── Empty states ─────────────────────────────────────────────── */
     .empty-state {
       color: var(--dim);
@@ -1144,8 +1153,12 @@ function renderClips(clips, jobId) {
           <a href="${esc(c.download_url)}" download="${esc(c.name)}">
             <button class="btn-sm btn-download">⬇ Download</button>
           </a>
+          <button class="btn-sm btn-preview" onclick="togglePreview(${i}, '${esc(c.download_url)}')">▶ Preview</button>
           <button class="btn-sm btn-why" onclick="toggleWhy(${i})">📄 Why chosen</button>
         </div>
+      </div>
+      <div class="clip-preview" id="preview-${i}">
+        <video id="video-${i}" controls style="width:100%;border-radius:4px;"></video>
       </div>
       <pre class="clip-why" id="why-${i}">${esc(c.why_chosen || '(no report available)')}</pre>
     </div>
@@ -1155,6 +1168,36 @@ function renderClips(clips, jobId) {
 function toggleWhy(i) {
   const el = document.getElementById(`why-${i}`);
   if (el) el.classList.toggle('open');
+}
+
+function togglePreview(i, url) {
+  const container = document.getElementById(`preview-${i}`);
+  const video     = document.getElementById(`video-${i}`);
+  if (!container || !video) return;
+
+  const opening = !container.classList.contains('open');
+
+  // Pause all other video players
+  document.querySelectorAll('video').forEach(v => {
+    if (v !== video) {
+      v.pause();
+      const id = v.id;
+      if (id) {
+        const idx = id.replace('video-', '');
+        const c = document.getElementById(`preview-${idx}`);
+        if (c) c.classList.remove('open');
+      }
+    }
+  });
+
+  if (opening) {
+    if (!video.src) video.src = url;
+    container.classList.add('open');
+    video.play().catch(() => {});
+  } else {
+    video.pause();
+    container.classList.remove('open');
+  }
 }
 
 /* ================================================================

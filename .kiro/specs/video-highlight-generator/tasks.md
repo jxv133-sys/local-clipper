@@ -133,7 +133,7 @@
 
 ## Web UI
 
-- [~] 20. Inline clip preview player
+- [x] 20. Inline clip preview player
   - Users must download a clip to watch it; add an inline `<video>` element in each clip card
   - Show a collapsed `▶ Preview` button below the download button; clicking it expands the video player
   - Use the existing `/output/<filename>` static route to stream the clip
