@@ -688,41 +688,43 @@ def cancel_job(job_id: str):
 
 @app.route("/api/ollama/models", methods=["GET"])
 def list_ollama_models():
-    """Return a list of locally available Ollama models."""
-    import subprocess
+    """Return a list of locally available Ollama models via the Ollama HTTP API."""
+    import requests as _requests
+
+    # Build the tags URL from the configured LLM endpoint
+    from config import Config as _Cfg
+    _tmp_cfg = _Cfg(work_dir="/tmp")
+    endpoint = _tmp_cfg.llm_endpoint.rstrip("/")
+    if endpoint.endswith("/api/generate"):
+        base_url = endpoint[: -len("/api/generate")]
+    else:
+        base_url = endpoint
+
+    tags_url = f"{base_url}/api/tags"
+
     try:
-        result = subprocess.run(
-            ["ollama", "list"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return jsonify({"error": "Ollama is not running or not installed", "models": []}), 200
+        response = _requests.get(tags_url, timeout=5)
+    except Exception as exc:
+        return jsonify({"error": f"Could not reach Ollama at {tags_url}: {exc}", "models": []}), 200
 
-        # Parse output: skip header line, extract model names from first column
-        lines = result.stdout.strip().split("\n")
+    if response.status_code != 200:
+        return jsonify({"error": f"Ollama returned HTTP {response.status_code}", "models": []}), 200
+
+    try:
+        data = response.json()
+        raw_models = data.get("models", [])
+        # Strip :tag suffix for cleaner display (e.g. "llama3:latest" → "llama3")
         models = []
-        for line in lines[1:]:  # skip header
-            if line.strip():
-                # Model name is the first column (e.g., "llama3:latest" or "mistral")
-                parts = line.split()
-                if parts:
-                    model_name = parts[0]
-                    # Strip tag suffix (e.g. :latest, :8b, :7b-instruct) for cleaner display
-                    if ":" in model_name:
-                        model_name = model_name.split(":")[0]
-                    models.append(model_name)
-
+        seen = set()
+        for entry in raw_models:
+            name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
+            short = name.split(":")[0]
+            if short and short not in seen:
+                seen.add(short)
+                models.append(short)
         return jsonify({"models": models, "error": None})
-
-    except FileNotFoundError:
-        return jsonify({"error": "Ollama command not found. Install from https://ollama.ai", "models": []}), 200
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Ollama command timed out", "models": []}), 200
-    except Exception as e:
-        return jsonify({"error": f"Failed to list models: {e}", "models": []}), 200
+    except Exception as exc:
+        return jsonify({"error": f"Failed to parse Ollama response: {exc}", "models": []}), 200
 
 
 # ---------------------------------------------------------------------------
