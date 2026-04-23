@@ -428,6 +428,26 @@
               value="crazy, important, watch this, incredible, insane" />
           </div>
 
+          <div>
+            <label for="opt-genre">Genre</label>
+            <select id="opt-genre">
+              <option value="auto" selected>Auto-detect</option>
+              <option value="gaming">Gaming</option>
+              <option value="podcast">Podcast</option>
+              <option value="comedy">Comedy</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="opt-platform">Platform</label>
+            <select id="opt-platform">
+              <option value="none" selected>No constraint</option>
+              <option value="shorts">YouTube Shorts (≤60s)</option>
+              <option value="tiktok">TikTok (≤60s)</option>
+              <option value="reels">Instagram Reels (≤90s)</option>
+            </select>
+          </div>
+
           <div class="full">
             <div class="toggle-row">
               <input type="checkbox" id="opt-llm" />
@@ -653,6 +673,8 @@ runBtn.addEventListener('click', async () => {
   fd.append('llm_model',     useTextInput ? llmModelText.value : llmModelSelect.value);
   fd.append('output_dir',    document.getElementById('opt-outdir').value);
   fd.append('burn_subtitles', document.getElementById('opt-subtitles').checked ? 'true' : 'false');
+  fd.append('genre',         document.getElementById('opt-genre').value);
+  fd.append('platform',      document.getElementById('opt-platform').value);
 
   try {
     const res = await fetch('/api/jobs', { method: 'POST', body: fd });
@@ -905,6 +927,12 @@ async function rerunJob(jobId) {
 
     const subtitlesEl = document.getElementById('opt-subtitles');
     subtitlesEl.checked = opts.burn_subtitles !== false;
+
+    const genreEl = document.getElementById('opt-genre');
+    if (opts.genre) genreEl.value = opts.genre;
+
+    const platformEl = document.getElementById('opt-platform');
+    if (opts.platform) platformEl.value = opts.platform;
 
     // Handle original video file
     const origPath = opts.original_video_path || '';

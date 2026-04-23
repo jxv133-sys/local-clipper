@@ -473,26 +473,60 @@ def combine_scores(
     llm: float | None,
     spike: float = 0.0,
     burst: float = 0.0,
+    excitement: float | None = None,
 ) -> float:
-    """Weighted sum of text, audio, spike, burst, and optional LLM scores. Always >= 0.
+    """Multi-signal weighted combination of all scoring components.
 
-    When config.llm_audio_gate is True and llm is not None, the LLM score
-    contribution is soft-capped based on audio energy:
-        effective_llm = llm * min(1.0, audio / 0.3)
-    This prevents a high LLM score on a quiet moment from overriding strong
-    audio signals.  At audio_score >= 0.3 the LLM score is used at full weight.
+    When excitement is provided (from AudioFeatures), it replaces the raw
+    audio score in the audio component — excitement = 0.6×volume + 0.4×pitch
+    is a richer signal than RMS alone.
+
+    Genre-aware weighting (Task 4.3):
+    - When config.genre is set (not "auto"), genre weights from config.genre_weights
+      are used to split the budget between audio and semantic (text+llm) signals.
+    - "auto" falls back to the original text_weight / audio_weight / llm_weight.
+
+    LLM audio gate:
+    - When config.llm_audio_gate is True, the LLM score is soft-capped by audio
+      energy to prevent a high LLM score on a quiet moment from dominating.
     """
+    # Use excitement score if available (richer than raw RMS)
+    effective_audio = excitement if excitement is not None else audio
+
+    # LLM audio gate
     if llm is not None and config.llm_audio_gate:
         effective_llm = llm * min(1.0, audio / 0.3)
     else:
         effective_llm = llm if llm is not None else 0.0
 
-    return max(0.0,
-               config.text_weight * text
-               + config.audio_weight * audio
-               + config.llm_weight * effective_llm
-               + config.spike_weight * spike
-               + config.burst_weight * burst)
+    genre = getattr(config, 'genre', 'auto')
+    genre_weights = getattr(config, 'genre_weights', {})
+
+    if genre != 'auto' and genre in genre_weights:
+        # Genre-aware formula: split budget between audio and semantic signals
+        gw = genre_weights[genre]
+        audio_w = gw.get('audio', 0.5)
+        semantic_w = gw.get('semantic', 0.5)
+        total = audio_w + semantic_w
+        if total > 0:
+            audio_w /= total
+            semantic_w /= total
+
+        # Semantic = blended text + llm
+        if effective_llm > 0.0:
+            semantic = 0.5 * text + 0.5 * effective_llm
+        else:
+            semantic = text
+
+        base = audio_w * effective_audio + semantic_w * semantic
+    else:
+        # Original formula
+        base = (config.text_weight * text
+                + config.audio_weight * effective_audio
+                + config.llm_weight * effective_llm)
+
+    # Spike and burst are always additive bonuses on top
+    return max(0.0, base + config.spike_weight * spike + config.burst_weight * burst)
 
 
 # ---------------------------------------------------------------------------
@@ -850,6 +884,15 @@ def score_segments(
     logger.info("Scorer starting — %d segment(s) to score", len(segments))
     t0 = time.time()
 
+    # Apply platform clip-length constraints if set
+    platform = getattr(config, 'platform', 'none')
+    platform_constraints = getattr(config, 'platform_constraints', {})
+    if platform and platform != 'none' and platform in platform_constraints:
+        pc = platform_constraints[platform]
+        config.min_clip_duration = max(config.min_clip_duration, pc.get('min', config.min_clip_duration))
+        config.max_clip_duration = min(config.max_clip_duration, pc.get('max', config.max_clip_duration))
+        logger.info("Scorer: platform=%s → min_clip=%.0fs max_clip=%.0fs", platform, config.min_clip_duration, config.max_clip_duration)
+
     # Phase 1: text + audio + spike + burst
     text_scores = [compute_text_score(config, seg) for seg in segments]
     audio_scores, raw_rms = compute_audio_score_with_raw(segments, wav_path)
@@ -860,6 +903,21 @@ def score_segments(
     nonzero_rms = [v for v in raw_rms if v > 0.0]
     global_rms_mean = sum(nonzero_rms) / len(nonzero_rms) if nonzero_rms else 0.0
     global_rms_max = max(nonzero_rms) if nonzero_rms else 0.0
+
+    # Enhanced audio features: excitement_score = 0.6×volume + 0.4×pitch
+    # Map each segment to the nearest AudioFeatures window by timestamp.
+    audio_features = compute_audio_features(config, wav_path)
+    excitement_scores: list[float | None]
+    if audio_features:
+        window = config.audio_feature_window
+        excitement_scores = []
+        for seg in segments:
+            mid = (seg.start + seg.end) / 2.0
+            idx = min(int(mid / window), len(audio_features) - 1)
+            excitement_scores.append(audio_features[idx].excitement_score)
+        logger.info("Scorer: excitement scores computed from %d audio feature windows", len(audio_features))
+    else:
+        excitement_scores = [None] * len(segments)
 
     # Hook detection: run once over the full transcript, then boost text scores
     # multiplicatively where hooks are detected.
@@ -945,7 +1003,8 @@ def score_segments(
     for i, (seg, text_s, audio_s, llm_s, spike_s, burst_s) in enumerate(
         zip(segments, text_scores, audio_scores, llm_scores, spike_scores, burst_scores)
     ):
-        clip_s = combine_scores(config, text_s, audio_s, llm_s, spike_s, burst_s)
+        excitement_s = excitement_scores[i]
+        clip_s = combine_scores(config, text_s, audio_s, llm_s, spike_s, burst_s, excitement_s)
         is_spike = i in audio_spike_indices_set
         scored.append(ScoredSegment(
             segment=seg,

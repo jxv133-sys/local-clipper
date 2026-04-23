@@ -160,5 +160,27 @@ class Config:
     hook_stride: int = 2
     # Minimum word count per window to bother calling the LLM
     hook_min_words: int = 5
-    # Minimum hook score to record (windows below this are discarded)
-    hook_score_threshold: float = 0.4
+    # Genre & platform (Task 6.1 / 6.2)
+    # Genre affects scoring weights; platform affects clip length constraints.
+    # genre: "gaming" | "podcast" | "comedy" | "auto"
+    genre: str = "auto"
+    # platform: "shorts" | "tiktok" | "reels" | "none"
+    platform: str = "none"
+
+    # Genre-specific scoring weights (used when genre != "auto")
+    # Each tuple is (audio_weight, semantic_weight) where semantic = text + llm combined.
+    # Visual weight is omitted (visual analysis not implemented).
+    # Weights are normalised internally so they don't need to sum to 1.0.
+    genre_weights: dict = field(default_factory=lambda: {
+        "podcast": {"audio": 0.35, "semantic": 0.65},
+        "gaming":  {"audio": 0.55, "semantic": 0.45},
+        "comedy":  {"audio": 0.40, "semantic": 0.60},
+    })
+
+    # Platform clip-length constraints (seconds)
+    platform_constraints: dict = field(default_factory=lambda: {
+        "tiktok":  {"min": 7.0,  "max": 60.0},
+        "shorts":  {"min": 10.0, "max": 60.0},
+        "reels":   {"min": 5.0,  "max": 90.0},
+        "none":    {"min": 10.0, "max": 100.0},
+    })

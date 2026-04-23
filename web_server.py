@@ -410,6 +410,8 @@ def create_job():
     llm_model = request.form.get("llm_model", "llama3")
     output_dir = request.form.get("output_dir", "").strip() or str(OUTPUT_DIR)
     burn_subtitles = request.form.get("burn_subtitles", "true").lower() != "false"
+    genre = request.form.get("genre", "auto").strip() or "auto"
+    platform = request.form.get("platform", "none").strip() or "none"
 
     # Build config
     work_dir = tempfile.mkdtemp(prefix="highlight_web_")
@@ -420,6 +422,8 @@ def create_job():
     cfg.llm_enabled = llm_enabled
     cfg.llm_model = llm_model
     cfg.burn_subtitles = burn_subtitles
+    cfg.genre = genre
+    cfg.platform = platform
 
     if keywords_raw.strip():
         cfg.keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
@@ -448,6 +452,8 @@ def create_job():
         "llm_model": llm_model,
         "output_dir": output_dir,
         "burn_subtitles": burn_subtitles,
+        "genre": genre,
+        "platform": platform,
         "original_video_path": str(upload_path),
     }
     _register_job(job)
