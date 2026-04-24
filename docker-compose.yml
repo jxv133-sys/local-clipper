@@ -10,14 +10,10 @@ services:
       - ./output:/app/output
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      # Give all math/BLAS libraries the full CPU budget
-      - OMP_NUM_THREADS=0
-      - NUMBA_NUM_THREADS=0
-      - OPENBLAS_NUM_THREADS=0
-      - MKL_NUM_THREADS=0
-      # faster-whisper / CTranslate2 thread count (0 = use all cores)
+      # CTranslate2 (faster-whisper): 0 = use all cores
       - CT2_INTER_THREADS=0
       - CT2_INTRA_THREADS=0
+      # OMP/BLAS/Numba: leave unset so each library auto-detects core count
     depends_on:
       - ollama
     restart: unless-stopped
