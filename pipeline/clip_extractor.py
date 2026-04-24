@@ -47,6 +47,7 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
                     "start_periods=1:start_silence=0.5:start_threshold=-50dB:"
                     "stop_periods=1:stop_silence=0.5:stop_threshold=-50dB"
                 ),
+                "-movflags", "+faststart",
                 trimmed_path,
             ],
             stdout=subprocess.PIPE,
@@ -131,6 +132,7 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
             "-to", str(clip.end),
             "-i", video_path,
             "-c", "copy",
+            "-movflags", "+faststart",  # moov atom at front for instant browser playback
             output_path,
         ],
         output_path,
@@ -151,6 +153,7 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
                 "-ss", str(clip.start),
                 "-to", str(clip.end),
                 "-i", video_path,
+                "-movflags", "+faststart",
                 output_path,
             ],
             output_path,

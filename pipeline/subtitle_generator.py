@@ -355,6 +355,17 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
             _shutil.copy2(video_path, output_path)
             return
 
+        # Probe source clip duration so image inputs don't truncate the output
+        probe_dur = subprocess.run(
+            [ffmpeg_bin, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            clip_duration = float(probe_dur.stdout.strip())
+        except (ValueError, AttributeError):
+            clip_duration = None
+
         # Build filter_complex: chain overlays
         # [0:v][1]overlay=enable='between(t,s,e)'[v1]; [v1][2]overlay=...
         fc_parts: list[str] = []
@@ -371,10 +382,14 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
         cmd = input_args + [
             "-filter_complex", filter_complex,
             "-map", "[vout]",
-            "-map", "0:a",
+            "-map", "0:a:0",
             "-c:a", "copy",
-            output_path,
+            "-movflags", "+faststart",
         ]
+        # Pin output duration to source so still-image inputs can't truncate audio
+        if clip_duration is not None:
+            cmd += ["-t", str(clip_duration)]
+        cmd.append(output_path)
 
         result = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
