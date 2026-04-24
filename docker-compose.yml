@@ -10,14 +10,10 @@ services:
       - ./output:/app/output
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      # OMP/BLAS/Numba: leave unset so each library auto-detects core count
     depends_on:
       - ollama
     restart: unless-stopped
-    # cpus/mem_limit work with plain `docker compose up` (no Swarm needed)
-    cpus: '4.0'
-    mem_limit: 8g
-    mem_reservation: 4g
+    cpus: '12.0'
     ulimits:
       nofile:
         soft: 65536
@@ -30,9 +26,7 @@ services:
     ports:
       - "11435:11434"
     restart: unless-stopped
-    cpus: '4.0'
-    mem_limit: 6g
-    mem_reservation: 3g
+    cpus: '8.0'
 
   ollama-init:
     image: ollama/ollama:latest
