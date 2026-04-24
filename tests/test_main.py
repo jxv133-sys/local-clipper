@@ -94,7 +94,7 @@ class TestRunPipelineStageOrdering:
             call_order.append("extract_audio")
             return str(tmp_path / "audio.wav")
 
-        def mock_transcribe(config, wav_path):
+        def mock_transcribe(config, wav_path, **kwargs):
             call_order.append("transcribe")
             return transcript
 
@@ -146,7 +146,7 @@ class TestRunPipelineStageOrdering:
         expected_wav = str(tmp_path / "audio.wav")
         received_wav = []
 
-        def mock_transcribe(config, wav_path):
+        def mock_transcribe(config, wav_path, **kwargs):
             received_wav.append(wav_path)
             return transcript
 
