@@ -1145,6 +1145,7 @@ function openSSE(jobId) {
       appendLog(msg.line);
     } else if (msg.type === 'progress') {
       updateProgress(msg.stage, msg.total, msg.stage_name, msg.percentage);
+      appendLogProgress(msg.stage_name || `Stage ${msg.stage}`, msg.stage, msg.total, msg.percentage);
     } else if (msg.type === 'llm_progress') {
       updateLLMProgress(msg.current, msg.total);
     } else if (msg.type === 'llm_done') {
@@ -1173,8 +1174,14 @@ const logEl = document.getElementById('log-output');
 
 function renderLog(lines) {
   logEl.innerHTML = '';
+  _currentStageEl = null;
+  _lastStageName  = null;
   lines.forEach(l => appendLog(l));
 }
+
+// Track the current in-log stage indicator element so we can update it in-place
+let _currentStageEl = null;
+let _lastStageName  = null;
 
 function appendLog(line) {
   // Remove placeholder
@@ -1186,6 +1193,34 @@ function appendLog(line) {
   span.textContent = line + '\n';
   logEl.appendChild(span);
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Inject or update an inline stage progress line inside the log
+function appendLogProgress(stageName, stage, total, percentage) {
+  const placeholder = logEl.querySelector('.empty-state');
+  if (placeholder) placeholder.remove();
+
+  const bar = buildInlineBar(percentage);
+  const text = `  ▶ ${stageName}  [${bar}]  ${percentage}%  (${stage}/${total})`;
+
+  if (_currentStageEl && _lastStageName === stageName) {
+    // Update existing line in-place
+    _currentStageEl.textContent = text + '\n';
+  } else {
+    // New stage — create a new line
+    const span = document.createElement('span');
+    span.className = 'log-line-stage';
+    span.textContent = text + '\n';
+    logEl.appendChild(span);
+    _currentStageEl = span;
+    _lastStageName  = stageName;
+  }
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function buildInlineBar(pct) {
+  const filled = Math.round(pct / 5);   // 0-20 blocks
+  return '█'.repeat(filled) + '░'.repeat(20 - filled);
 }
 
 function classifyLogLine(line) {
@@ -1222,6 +1257,8 @@ function updateProgress(stage, total, stageName, percentage) {
 }
 
 function resetProgress() {
+  _currentStageEl = null;
+  _lastStageName  = null;
   const container = document.getElementById('progress-container');
   const bar       = document.getElementById('progress-bar');
   const label     = document.getElementById('progress-label');
