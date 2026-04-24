@@ -1040,31 +1040,44 @@ def score_segments(
             # Track which segments are audio spikes (will bypass LLM)
             audio_spike_indices_set = {idx for idx, _ in audio_spike_candidates}
 
-            # Score LLM candidates only (audio spikes bypass LLM)
+            # Score LLM candidates concurrently — HTTP I/O releases the GIL so
+            # threads work well here and keep Ollama's inference queue full.
             total_llm = len(llm_candidates)
-            for llm_idx, (seed_idx, pre_score) in enumerate(llm_candidates):
+            completed_count = [0]
+            results_lock = __import__("threading").Lock()
+
+            def _score_one(args):
+                llm_idx, (seed_idx, pre_score) = args
                 try:
-                    llm_score, metadata = _score_window_with_llm(
+                    score, meta = _score_window_with_llm(
                         config, seed_idx, segments, audio_scores, raw_rms,
                         global_rms_mean, global_rms_max
                     )
                 except LLMScoringError as exc:
                     logger.warning("LLM scoring failed for window at %.1fs: %s",
                                    segments[seed_idx].start, exc)
-                    llm_score, metadata = 0.0, None
+                    score, meta = 0.0, None
+                with results_lock:
+                    completed_count[0] += 1
+                    if llm_progress_callback is not None:
+                        llm_progress_callback(completed_count[0], total_llm)
+                return seed_idx, score, meta
 
-                if llm_progress_callback is not None:
-                    llm_progress_callback(llm_idx + 1, total_llm)
+            # Concurrency = number of parallel requests to Ollama.
+            # Ollama queues requests internally so more than its thread count
+            # doesn't help, but 4 keeps its pipeline full without overloading.
+            llm_concurrency = min(total_llm, 4)
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=llm_concurrency) as pool:
+                scored_results = list(pool.map(
+                    _score_one, enumerate(llm_candidates)
+                ))
 
-                # Apply the LLM score to the seed and all segments within the
-                # same window (within half a clip-length).  This means nearby
-                # segments benefit from the LLM's assessment of the moment.
+            for seed_idx, llm_score, metadata in scored_results:
                 seed = segments[seed_idx]
                 half = config.min_clip_duration / 2.0
                 for i, seg in enumerate(segments):
                     if seg.end > seed.start - half and seg.start < seed.end + half:
-                        # Take the max so a segment in two overlapping windows
-                        # keeps the better LLM score.
                         if llm_score > llm_scores[i]:
                             llm_scores[i] = llm_score
                             llm_metadatas[i] = metadata

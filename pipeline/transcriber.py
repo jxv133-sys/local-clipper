@@ -243,147 +243,85 @@ def _get_available_cpus() -> int:
 
 
 def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=None) -> list[Segment]:
-    """Transcribe using faster-whisper with parallel processes to bypass the GIL."""
-    import concurrent.futures
-    import multiprocessing
+    """Transcribe using faster-whisper's BatchedInferencePipeline.
+
+    Batched inference processes multiple audio chunks through the encoder
+    simultaneously, saturating CPU SIMD/AVX units. This is the correct way
+    to get high CPU utilisation — parallel processes hit memory bandwidth
+    limits, but batching keeps the compute units busy.
+    """
     import os as _os
-    import tempfile
-    import wave as _wave
 
     cpu_count = _get_available_cpus()
-    num_workers = max(1, cpu_count // 2)
-    threads_per_worker = max(1, cpu_count // num_workers)
+    # Use all cores for intra-op parallelism within the single model instance
+    cpu_threads = cpu_count
 
-    logger.info("[Transcriber] CPU count=%d, workers=%d, threads/worker=%d",
-                cpu_count, num_workers, threads_per_worker)
+    logger.info("[Transcriber] CPU count=%d, using BatchedInferencePipeline", cpu_count)
 
     try:
         audio_duration = _get_wav_duration(wav_path)
     except Exception:
         audio_duration = None
 
-    if (audio_duration is not None and audio_duration < 60.0) or num_workers <= 1:
-        return _transcribe_faster_whisper_single(config, wav_path, progress_callback, cpu_count)
+    language = None if config.language == "auto" else config.language
 
-    CHUNK_DURATION = 300.0
-    OVERLAP        = 5.0
-
+    # Try batched inference first (faster-whisper >= 1.0)
     try:
-        with _wave.open(wav_path, "rb") as wf:
-            sample_rate  = wf.getframerate()
-            n_channels   = wf.getnchannels()
-            sampwidth    = wf.getsampwidth()
-            total_frames = wf.getnframes()
-            raw_audio    = wf.readframes(total_frames)
-    except Exception:
-        return _transcribe_faster_whisper_single(config, wav_path, progress_callback, cpu_count)
+        from faster_whisper.transcribe import BatchedInferencePipeline
 
-    bytes_per_frame = n_channels * sampwidth
-    total_secs = total_frames / sample_rate
+        cache_key = ("faster-whisper-batched", config.whisper_model, cpu_threads)
+        if cache_key in _MODEL_CACHE:
+            model = _MODEL_CACHE[cache_key]
+        else:
+            base_model = FasterWhisperModel(
+                config.whisper_model,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=cpu_threads,
+            )
+            model = BatchedInferencePipeline(model=base_model)
+            _MODEL_CACHE[cache_key] = model
 
-    chunks: list[tuple[float, float]] = []
-    start = 0.0
-    while start < total_secs:
-        end = min(start + CHUNK_DURATION, total_secs)
-        chunks.append((start, end))
-        if end >= total_secs:
-            break
-        start = end - OVERLAP
+        # batch_size controls how many 30s chunks are encoded in parallel.
+        # Higher = more CPU utilisation but more RAM. 8–16 is a good range.
+        batch_size = min(16, cpu_count * 2)
 
-    if len(chunks) <= 1:
-        return _transcribe_faster_whisper_single(config, wav_path, progress_callback, cpu_count)
+        raw_segments, _info = model.transcribe(
+            wav_path,
+            word_timestamps=True,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+            beam_size=1,
+            language=language,
+            batch_size=batch_size,
+        )
 
-    logger.info("[Transcriber] Splitting %.0fs audio into %d chunks across %d processes (%d threads each)",
-                total_secs, len(chunks), num_workers, threads_per_worker)
+        segments: list[Segment] = []
+        last_reported_pct = 10
 
-    tmp_dir = tempfile.mkdtemp(prefix="whisper_chunks_")
-    chunk_paths: list[tuple[float, str]] = []
-    try:
-        for i, (cs, ce) in enumerate(chunks):
-            frame_start = int(cs * sample_rate) * bytes_per_frame
-            frame_end   = int(ce * sample_rate) * bytes_per_frame
-            chunk_path  = _os.path.join(tmp_dir, f"chunk_{i:04d}.wav")
-            with _wave.open(chunk_path, "wb") as wout:
-                wout.setnchannels(n_channels)
-                wout.setsampwidth(sampwidth)
-                wout.setframerate(sample_rate)
-                wout.writeframes(raw_audio[frame_start:frame_end])
-            chunk_paths.append((cs, chunk_path))
+        for seg in raw_segments:
+            words: list[WordTimestamp] = []
+            if seg.words:
+                for w in seg.words:
+                    words.append(WordTimestamp(word=w.word, start=float(w.start), end=float(w.end)))
+            segments.append(Segment(start=float(seg.start), end=float(seg.end), text=seg.text, words=words))
 
-        all_results: list[tuple[float, list[Segment]]] = []
-        completed = 0
-        args = [
-            (cs, cp, config.whisper_model, config.language, threads_per_worker, OVERLAP)
-            for cs, cp in chunk_paths
-        ]
-        # 'spawn' is safe from a multithreaded Flask parent; avoids fork deadlocks
-        mp_ctx = multiprocessing.get_context("spawn")
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_workers, mp_context=mp_ctx
-        ) as pool:
-            futures = {pool.submit(_transcribe_chunk_worker, *a): a[0] for a in args}
-            for fut in concurrent.futures.as_completed(futures):
-                chunk_start, segs = fut.result()
-                all_results.append((chunk_start, segs))
-                completed += 1
-                if progress_callback and audio_duration:
-                    pct = int(10 + (completed / len(chunk_paths)) * 50)
-                    progress_callback(min(60, pct))
+            if progress_callback and audio_duration and audio_duration > 0:
+                progress_pct = int(10 + (seg.end / audio_duration) * 50)
+                progress_pct = min(60, max(10, progress_pct))
+                if progress_pct >= last_reported_pct + 5:
+                    progress_callback(progress_pct)
+                    last_reported_pct = progress_pct
 
-        all_segments: list[Segment] = []
-        for _, segs in all_results:
-            all_segments.extend(segs)
-        all_segments.sort(key=lambda s: s.start)
         if progress_callback:
             progress_callback(60)
-        return all_segments
 
-    finally:
-        import shutil as _shutil
-        _shutil.rmtree(tmp_dir, ignore_errors=True)
+        return segments
 
-
-def _transcribe_chunk_worker(
-    chunk_start: float,
-    chunk_path: str,
-    model_name: str,
-    language: str,
-    cpu_threads: int,
-    overlap: float,
-) -> tuple[float, list[Segment]]:
-    """Top-level function executed in a worker process.
-
-    Must be a module-level function (not a closure) so it can be pickled
-    by ProcessPoolExecutor.
-    """
-    from faster_whisper import WhisperModel as _FW
-    from pipeline.models import Segment, WordTimestamp
-
-    lang = None if language == "auto" else language
-
-    model = _FW(model_name, device="cpu", compute_type="int8", cpu_threads=cpu_threads)
-    raw_segs, _ = model.transcribe(
-        chunk_path,
-        word_timestamps=True,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
-        beam_size=1,
-        language=lang,
-    )
-
-    adjusted: list[Segment] = []
-    for seg in raw_segs:
-        abs_start = seg.start + chunk_start
-        abs_end   = seg.end   + chunk_start
-        if chunk_start > 0 and abs_start < chunk_start + overlap / 2:
-            continue
-        words = [
-            WordTimestamp(w.word, w.start + chunk_start, w.end + chunk_start)
-            for w in (seg.words or [])
-        ]
-        adjusted.append(Segment(start=abs_start, end=abs_end, text=seg.text, words=words))
-
-    return chunk_start, adjusted
+    except (ImportError, AttributeError):
+        # BatchedInferencePipeline not available — fall back to standard single instance
+        logger.info("[Transcriber] BatchedInferencePipeline unavailable, using standard transcription")
+        return _transcribe_faster_whisper_single(config, wav_path, progress_callback, cpu_threads)
 
 
 def _transcribe_faster_whisper_single(

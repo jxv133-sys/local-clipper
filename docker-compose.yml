@@ -30,9 +30,9 @@ services:
     ports:
       - "11435:11434"
     restart: unless-stopped
-    cpus: '2.0'
-    mem_limit: 4g
-    mem_reservation: 2g
+    cpus: '4.0'
+    mem_limit: 6g
+    mem_reservation: 3g
 
   ollama-init:
     image: ollama/ollama:latest
