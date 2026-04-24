@@ -244,67 +244,119 @@
       padding: 16px 20px;
     }
 
-    /* ── Progress bar ─────────────────────────────────────────────── */
-    #progress-container {
-      display: none;
-      margin-bottom: 10px;
-    }
-    #progress-header {
+    /* ── Pipeline stage chart ─────────────────────────────────────── */
+    #pipeline-stages {
       display: flex;
-      justify-content: space-between;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .stage-row {
+      display: grid;
+      grid-template-columns: 22px 1fr 38px;
       align-items: center;
-      margin-bottom: 5px;
+      gap: 8px;
     }
-    #progress-label {
-      font-size: 0.75rem;
-      color: var(--accent2);
-      font-weight: 600;
-    }
-    #progress-percentage {
-      font-size: 0.75rem;
+
+    .stage-icon {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+      flex-shrink: 0;
+      background: var(--border);
       color: var(--dim);
-      font-weight: 600;
+      transition: background 0.3s, color 0.3s;
     }
-    #progress-bar-container {
+    .stage-icon.active   { background: var(--accent);  color: #fff; animation: pulse 1s infinite; }
+    .stage-icon.done     { background: var(--success);  color: #fff; }
+    .stage-icon.failed   { background: var(--error);    color: #fff; }
+
+    .stage-body { display: flex; flex-direction: column; gap: 3px; }
+    .stage-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--dim);
+      transition: color 0.3s;
+    }
+    .stage-label.active { color: var(--text); }
+    .stage-label.done   { color: var(--success); }
+    .stage-label.failed { color: var(--error); }
+
+    .stage-track {
       width: 100%;
-      height: 6px;
+      height: 5px;
       background: var(--border);
       border-radius: 3px;
       overflow: hidden;
     }
-    #progress-bar {
+    .stage-fill {
       height: 100%;
       width: 0%;
-      background: var(--accent);
       border-radius: 3px;
-      transition: width 0.3s ease;
+      transition: width 0.4s ease, background 0.3s;
+      background: var(--accent);
+    }
+    .stage-fill.done   { background: var(--success); }
+    .stage-fill.failed { background: var(--error); }
+
+    .stage-pct {
+      font-size: 0.68rem;
+      color: var(--dim);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
 
-    /* ── LLM mini progress bar ────────────────────────────────────── */
-    #llm-progress-container {
+    /* LLM sub-bar */
+    .stage-llm {
       display: none;
-      margin-top: 8px;
-      margin-bottom: 4px;
+      margin-top: 2px;
     }
-    #llm-progress-label {
-      font-size: 0.72rem;
-      color: var(--warning);
-      margin-bottom: 3px;
-    }
-    #llm-progress-bar-container {
+    .stage-llm.visible { display: block; }
+    .stage-llm-track {
       width: 100%;
-      height: 4px;
+      height: 3px;
       background: var(--border);
       border-radius: 2px;
       overflow: hidden;
     }
-    #llm-progress-bar {
+    .stage-llm-fill {
       height: 100%;
       width: 0%;
       background: var(--warning);
       border-radius: 2px;
       transition: width 0.3s ease;
     }
+    .stage-llm-label {
+      font-size: 0.65rem;
+      color: var(--warning);
+      margin-bottom: 2px;
+    }
+
+    /* Log toggle */
+    .log-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--dim);
+      margin-bottom: 6px;
+      padding: 4px 0;
+      border-top: 1px solid var(--border);
+    }
+    .log-toggle:hover { color: var(--text); }
+    .log-toggle .chevron { transition: transform 0.2s; }
+    .log-toggle.open .chevron { transform: rotate(90deg); }
+
+    /* ── Progress bar (kept for compat, hidden) ───────────────────── */
+    #progress-container { display: none !important; }
 
     #log-output {
       flex: 1;
@@ -746,25 +798,30 @@
     <!-- ── Right panel: log + results ────────────────────────────── -->
     <div class="right-panel">
 
-      <!-- Log -->
+      <!-- Log / Pipeline progress -->
       <div class="log-panel">
-        <div class="section-title" style="margin-bottom:8px">Progress Log</div>
-        <div id="progress-container">
-          <div id="progress-header">
-            <span id="progress-label">Stage 0 / 7</span>
-            <span id="progress-percentage">0%</span>
-          </div>
-          <div id="progress-bar-container">
-            <div id="progress-bar"></div>
-          </div>
+        <div class="section-title" style="margin-bottom:10px">Pipeline Progress</div>
+
+        <!-- Stage chart -->
+        <div id="pipeline-stages">
+          <!-- stages injected by JS -->
+        </div>
+
+        <!-- Hidden compat elements (JS still references these) -->
+        <div id="progress-container" style="display:none">
+          <div id="progress-header"><span id="progress-label"></span><span id="progress-percentage"></span></div>
+          <div id="progress-bar-container"><div id="progress-bar"></div></div>
           <div id="llm-progress-container">
-            <div id="llm-progress-label">LLM scoring: candidate 0 / 0</div>
-            <div id="llm-progress-bar-container">
-              <div id="llm-progress-bar"></div>
-            </div>
+            <div id="llm-progress-label"></div>
+            <div id="llm-progress-bar-container"><div id="llm-progress-bar"></div></div>
           </div>
         </div>
-        <div id="log-output"><span class="empty-state">Select a job from the queue to see its log, or submit a new job above.</span></div>
+
+        <!-- Collapsible log -->
+        <div class="log-toggle" id="log-toggle" onclick="toggleLog()">
+          <span class="chevron">▶</span> Raw Log
+        </div>
+        <div id="log-output" style="display:none"><span class="empty-state">No log yet.</span></div>
       </div>
 
       <!-- Results -->
@@ -1145,12 +1202,13 @@ function openSSE(jobId) {
       appendLog(msg.line);
     } else if (msg.type === 'progress') {
       updateProgress(msg.stage, msg.total, msg.stage_name, msg.percentage);
-      appendLogProgress(msg.stage_name || `Stage ${msg.stage}`, msg.stage, msg.total, msg.percentage);
     } else if (msg.type === 'llm_progress') {
       updateLLMProgress(msg.current, msg.total);
     } else if (msg.type === 'llm_done') {
       finishLLMProgress(msg.scored);
     } else if (msg.type === 'done') {
+      // Mark all stages complete
+      STAGES.forEach(s => _updateStage(s.id, 'done', 100));
       es.close();
       activeSSE = null;
       // Reload full job to get clips
@@ -1162,6 +1220,12 @@ function openSSE(jobId) {
   };
 
   es.onerror = () => {
+    // Mark active stage as failed
+    STAGES.forEach(s => {
+      if (stageState[s.id] && stageState[s.id].status === 'active') {
+        _updateStage(s.id, 'failed', stageState[s.id].pct);
+      }
+    });
     es.close();
     activeSSE = null;
   };
@@ -1174,14 +1238,8 @@ const logEl = document.getElementById('log-output');
 
 function renderLog(lines) {
   logEl.innerHTML = '';
-  _currentStageEl = null;
-  _lastStageName  = null;
   lines.forEach(l => appendLog(l));
 }
-
-// Track the current in-log stage indicator element so we can update it in-place
-let _currentStageEl = null;
-let _lastStageName  = null;
 
 function appendLog(line) {
   // Remove placeholder
@@ -1191,53 +1249,8 @@ function appendLog(line) {
   const span = document.createElement('span');
   span.className = classifyLogLine(line);
   span.textContent = line + '\n';
-
-  // If there's an active stage bar, insert the log line before it so the
-  // bar always stays at the bottom and updates remain visible
-  if (_currentStageEl && _currentStageEl.parentNode === logEl) {
-    logEl.insertBefore(span, _currentStageEl);
-  } else {
-    logEl.appendChild(span);
-  }
+  logEl.appendChild(span);
   logEl.scrollTop = logEl.scrollHeight;
-}
-
-// Inject or update an inline stage progress line inside the log
-function appendLogProgress(stageName, stage, total, percentage) {
-  const placeholder = logEl.querySelector('.empty-state');
-  if (placeholder) placeholder.remove();
-
-  const bar  = buildInlineBar(percentage);
-  const text = `  ▶ ${stageName}  [${bar}]  ${percentage}%  (${stage}/${total})`;
-
-  if (_currentStageEl && _lastStageName === stageName) {
-    // Update existing line in-place
-    _currentStageEl.textContent = text + '\n';
-    // If complete, detach from tracking so next log lines go after it
-    if (percentage >= 100) {
-      _currentStageEl.className = 'log-line-success';
-      _currentStageEl = null;
-      _lastStageName  = null;
-    }
-  } else {
-    // Finalize previous stage bar if there was one
-    if (_currentStageEl) {
-      _currentStageEl = null;
-      _lastStageName  = null;
-    }
-    const span = document.createElement('span');
-    span.className = 'log-line-stage';
-    span.textContent = text + '\n';
-    logEl.appendChild(span);
-    _currentStageEl = span;
-    _lastStageName  = stageName;
-  }
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-function buildInlineBar(pct) {
-  const filled = Math.round(pct / 5);   // 0-20 blocks
-  return '█'.repeat(filled) + '░'.repeat(20 - filled);
 }
 
 function classifyLogLine(line) {
@@ -1250,71 +1263,120 @@ function classifyLogLine(line) {
 }
 
 /* ================================================================
-   Progress bar
+   Pipeline stage chart
    ================================================================ */
-function updateProgress(stage, total, stageName, percentage) {
-  const container = document.getElementById('progress-container');
-  const bar       = document.getElementById('progress-bar');
-  const label     = document.getElementById('progress-label');
-  const pct       = document.getElementById('progress-percentage');
-  
-  container.style.display = '';
-  
-  // Update label with stage name if provided
-  if (stageName) {
-    label.textContent = `${stageName} (${stage} / ${total})`;
-  } else {
-    label.textContent = `Stage ${stage} / ${total}`;
-  }
-  
-  // Update percentage display and bar width
-  const displayPct = percentage || Math.round((stage / total) * 100);
-  pct.textContent = `${displayPct}%`;
-  bar.style.width = `${displayPct}%`;
+const STAGES = [
+  { id: 1, name: 'Audio Extraction',    icon: '🎵' },
+  { id: 2, name: 'Transcription',       icon: '📝' },
+  { id: 3, name: 'Scoring Segments',    icon: '📊' },
+  { id: 4, name: 'Selecting Clips',     icon: '✂️'  },
+  { id: 5, name: 'Extracting Clips',    icon: '🎬' },
+  { id: 6, name: 'Generating Subtitles',icon: '💬' },
+  { id: 7, name: 'Generating Reports',  icon: '📄' },
+];
+
+// stageState[id] = { status: 'idle'|'active'|'done'|'failed', pct: 0-100 }
+let stageState = {};
+
+function _initStages() {
+  stageState = {};
+  STAGES.forEach(s => { stageState[s.id] = { status: 'idle', pct: 0 }; });
+  _renderStageChart();
+}
+
+function _renderStageChart() {
+  const el = document.getElementById('pipeline-stages');
+  el.innerHTML = STAGES.map(s => {
+    const st = stageState[s.id] || { status: 'idle', pct: 0 };
+    const isLLM = s.id === 3;
+    return `
+    <div class="stage-row" id="stage-row-${s.id}">
+      <div class="stage-icon ${st.status}" id="stage-icon-${s.id}">${s.icon}</div>
+      <div class="stage-body">
+        <div class="stage-label ${st.status}" id="stage-label-${s.id}">${s.name}</div>
+        <div class="stage-track">
+          <div class="stage-fill ${st.status === 'done' ? 'done' : st.status === 'failed' ? 'failed' : ''}"
+               id="stage-fill-${s.id}" style="width:${st.pct}%"></div>
+        </div>
+        ${isLLM ? `
+        <div class="stage-llm" id="stage-llm-${s.id}">
+          <div class="stage-llm-label" id="stage-llm-label-${s.id}">LLM scoring…</div>
+          <div class="stage-llm-track"><div class="stage-llm-fill" id="stage-llm-fill-${s.id}"></div></div>
+        </div>` : ''}
+      </div>
+      <div class="stage-pct" id="stage-pct-${s.id}">${st.pct > 0 ? st.pct + '%' : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+function _updateStage(stageId, status, pct) {
+  if (!stageState[stageId]) return;
+  stageState[stageId] = { status, pct };
+
+  const icon  = document.getElementById(`stage-icon-${stageId}`);
+  const label = document.getElementById(`stage-label-${stageId}`);
+  const fill  = document.getElementById(`stage-fill-${stageId}`);
+  const pctEl = document.getElementById(`stage-pct-${stageId}`);
+  if (!icon) return;
+
+  icon.className  = `stage-icon ${status}`;
+  label.className = `stage-label ${status}`;
+  fill.style.width = `${pct}%`;
+  fill.className  = `stage-fill${status === 'done' ? ' done' : status === 'failed' ? ' failed' : ''}`;
+  pctEl.textContent = pct > 0 ? `${pct}%` : '';
 }
 
 function resetProgress() {
-  _currentStageEl = null;
-  _lastStageName  = null;
-  const container = document.getElementById('progress-container');
-  const bar       = document.getElementById('progress-bar');
-  const label     = document.getElementById('progress-label');
-  const pct       = document.getElementById('progress-percentage');
-  
-  container.style.display = 'none';
-  bar.style.width = '0%';
-  label.textContent = 'Stage 0 / 7';
-  pct.textContent = '0%';
-
-  // Also reset LLM mini bar
-  document.getElementById('llm-progress-container').style.display = 'none';
-  document.getElementById('llm-progress-bar').style.width = '0%';
-  document.getElementById('llm-progress-label').textContent = 'LLM scoring: candidate 0 / 0';
+  _initStages();
 }
 
-/* ================================================================
-   LLM mini progress bar
-   ================================================================ */
-function updateLLMProgress(current, total) {
-  const container = document.getElementById('llm-progress-container');
-  const bar       = document.getElementById('llm-progress-bar');
-  const label     = document.getElementById('llm-progress-label');
+function updateProgress(stage, total, stageName, percentage) {
+  // Mark all previous stages done
+  for (let i = 1; i < stage; i++) {
+    if (stageState[i] && stageState[i].status !== 'done') {
+      _updateStage(i, 'done', 100);
+    }
+  }
+  // Mark current stage active
+  _updateStage(stage, percentage >= 100 ? 'done' : 'active', percentage);
+}
 
-  container.style.display = '';
-  label.textContent = `LLM scoring: candidate ${current} / ${total}`;
-  bar.style.width = `${Math.round((current / total) * 100)}%`;
+function updateLLMProgress(current, total) {
+  const pct = Math.round((current / total) * 100);
+  const llmEl   = document.getElementById('stage-llm-3');
+  const llmFill = document.getElementById('stage-llm-fill-3');
+  const llmLbl  = document.getElementById('stage-llm-label-3');
+  if (llmEl) {
+    llmEl.classList.add('visible');
+    llmFill.style.width = `${pct}%`;
+    llmLbl.textContent  = `LLM scoring: ${current} / ${total}`;
+  }
 }
 
 function finishLLMProgress(scored) {
-  const container = document.getElementById('llm-progress-container');
-  const bar       = document.getElementById('llm-progress-bar');
-  const label     = document.getElementById('llm-progress-label');
-
-  bar.style.width = '100%';
-  label.textContent = `LLM scoring complete (${scored} candidate${scored !== 1 ? 's' : ''})`;
-  // Hide after a short delay
-  setTimeout(() => { container.style.display = 'none'; }, 3000);
+  const llmEl   = document.getElementById('stage-llm-3');
+  const llmFill = document.getElementById('stage-llm-fill-3');
+  const llmLbl  = document.getElementById('stage-llm-label-3');
+  if (llmEl) {
+    llmFill.style.width = '100%';
+    llmLbl.textContent  = `LLM scoring complete (${scored} candidate${scored !== 1 ? 's' : ''})`;
+    setTimeout(() => { llmEl.classList.remove('visible'); }, 3000);
+  }
 }
+
+/* ================================================================
+   Log toggle
+   ================================================================ */
+function toggleLog() {
+  const logEl   = document.getElementById('log-output');
+  const toggle  = document.getElementById('log-toggle');
+  const open    = logEl.style.display === 'none';
+  logEl.style.display = open ? '' : 'none';
+  toggle.classList.toggle('open', open);
+}
+
+// Init stages on load
+_initStages();
 
 /* ================================================================
    Clips rendering
