@@ -216,28 +216,52 @@ def transcribe(config: Config, wav_path: str, progress_callback=None) -> Transcr
     return transcript
 
 
-def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=None) -> list[Segment]:
-    """Transcribe using faster-whisper (CTranslate2 backend).
+def _get_available_cpus() -> int:
+    """Return CPUs actually available — reads cgroup quota, not os.cpu_count()."""
+    import os as _os
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as f:
+            quota_str, period_str = f.read().strip().split()
+            if quota_str != "max":
+                cpus = int(float(quota_str) / float(period_str))
+                if cpus >= 1:
+                    return cpus
+    except Exception:
+        pass
+    try:
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fq, \
+             open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fp:
+            quota  = int(fq.read().strip())
+            period = int(fp.read().strip())
+            if quota > 0:
+                cpus = int(quota / period)
+                if cpus >= 1:
+                    return cpus
+    except Exception:
+        pass
+    return _os.cpu_count() or 2
 
-    Splits audio into overlapping chunks and transcribes them in parallel using
-    ProcessPoolExecutor — separate processes bypass Python's GIL so CTranslate2
-    actually runs concurrently across all CPU cores.
-    """
+
+def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=None) -> list[Segment]:
+    """Transcribe using faster-whisper with parallel processes to bypass the GIL."""
     import concurrent.futures
+    import multiprocessing
     import os as _os
     import tempfile
     import wave as _wave
 
-    cpu_count = _os.cpu_count() or 4
+    cpu_count = _get_available_cpus()
     num_workers = max(1, cpu_count // 2)
     threads_per_worker = max(1, cpu_count // num_workers)
+
+    logger.info("[Transcriber] CPU count=%d, workers=%d, threads/worker=%d",
+                cpu_count, num_workers, threads_per_worker)
 
     try:
         audio_duration = _get_wav_duration(wav_path)
     except Exception:
         audio_duration = None
 
-    # Short files or single-core: single instance with all threads
     if (audio_duration is not None and audio_duration < 60.0) or num_workers <= 1:
         return _transcribe_faster_whisper_single(config, wav_path, progress_callback, cpu_count)
 
@@ -286,14 +310,17 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
                 wout.writeframes(raw_audio[frame_start:frame_end])
             chunk_paths.append((cs, chunk_path))
 
-        # ProcessPoolExecutor: each worker is a separate process — no GIL contention
         all_results: list[tuple[float, list[Segment]]] = []
         completed = 0
         args = [
             (cs, cp, config.whisper_model, config.language, threads_per_worker, OVERLAP)
             for cs, cp in chunk_paths
         ]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as pool:
+        # 'spawn' is safe from a multithreaded Flask parent; avoids fork deadlocks
+        mp_ctx = multiprocessing.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_workers, mp_context=mp_ctx
+        ) as pool:
             futures = {pool.submit(_transcribe_chunk_worker, *a): a[0] for a in args}
             for fut in concurrent.futures.as_completed(futures):
                 chunk_start, segs = fut.result()
@@ -307,7 +334,6 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
         for _, segs in all_results:
             all_segments.extend(segs)
         all_segments.sort(key=lambda s: s.start)
-
         if progress_callback:
             progress_callback(60)
         return all_segments
@@ -370,7 +396,7 @@ def _transcribe_faster_whisper_single(
     import os as _os
 
     if cpu_threads is None:
-        cpu_threads = _os.cpu_count() or 4
+        cpu_threads = _get_available_cpus()
 
     try:
         cache_key = ("faster-whisper", config.whisper_model, cpu_threads)
