@@ -219,23 +219,18 @@ def transcribe(config: Config, wav_path: str, progress_callback=None) -> Transcr
 def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=None) -> list[Segment]:
     """Transcribe using faster-whisper (CTranslate2 backend).
 
-    Splits the audio into overlapping chunks and transcribes them in parallel
-    using a pool of model instances — one per CPU core. This saturates all
-    available cores instead of running a single sequential stream.
-
-    Args:
-        config: Pipeline configuration.
-        wav_path: Path to WAV file.
-        progress_callback: Optional callback(percentage) for progress updates.
+    Splits the audio into overlapping chunks and transcribes them in parallel.
+    Each worker thread owns its own model instance (CTranslate2 is not safe for
+    concurrent inference on a shared instance), stored in thread-local storage.
     """
     import concurrent.futures
     import os as _os
     import tempfile
+    import threading
     import wave as _wave
 
     cpu_count = _os.cpu_count() or 4
-    # Use half the cores for model instances — each instance uses 2 threads
-    # internally, so total threads = num_workers * 2 ≈ cpu_count
+    # Each worker gets (cpu_count // num_workers) threads so total = cpu_count
     num_workers = max(1, cpu_count // 2)
     threads_per_worker = max(1, cpu_count // num_workers)
 
@@ -246,15 +241,15 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
     except Exception:
         audio_duration = None
 
-    # For short files or single-core, fall back to simple single-instance path
-    if audio_duration is not None and audio_duration < 60.0 or num_workers == 1:
+    # Short files or single-core: use one instance with all threads
+    if (audio_duration is not None and audio_duration < 60.0) or num_workers <= 1:
         return _transcribe_faster_whisper_single(
-            config, wav_path, progress_callback, threads_per_worker * num_workers
+            config, wav_path, progress_callback, cpu_count
         )
 
     # --- Split WAV into overlapping chunks ---
     CHUNK_DURATION = 300.0   # 5-minute chunks
-    OVERLAP        = 5.0     # 5s overlap to avoid cutting words at boundaries
+    OVERLAP        = 5.0     # overlap to avoid cutting words at boundaries
 
     try:
         with _wave.open(wav_path, "rb") as wf:
@@ -264,74 +259,82 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
             total_frames = wf.getnframes()
             raw_audio    = wf.readframes(total_frames)
     except Exception:
-        # Can't split — fall back to single instance
         return _transcribe_faster_whisper_single(config, wav_path, progress_callback, cpu_count)
 
-    import array as _array
     bytes_per_frame = n_channels * sampwidth
     total_secs = total_frames / sample_rate
 
-    # Build chunk boundaries
-    chunks: list[tuple[float, float]] = []  # (start_sec, end_sec)
+    chunks: list[tuple[float, float]] = []
     start = 0.0
     while start < total_secs:
         end = min(start + CHUNK_DURATION, total_secs)
         chunks.append((start, end))
         if end >= total_secs:
             break
-        start = end - OVERLAP  # back up by overlap for next chunk
+        start = end - OVERLAP
 
     if len(chunks) <= 1:
         return _transcribe_faster_whisper_single(config, wav_path, progress_callback, cpu_count)
 
-    logger.info("[Transcriber] Splitting %.0fs audio into %d chunks across %d workers",
-                total_secs, len(chunks), num_workers)
+    logger.info("[Transcriber] Splitting %.0fs audio into %d chunks across %d workers (%d threads each)",
+                total_secs, len(chunks), num_workers, threads_per_worker)
 
-    # Write each chunk to a temp WAV file
+    # Thread-local storage: each worker thread gets its own model instance so
+    # CTranslate2 can run fully parallel without internal serialization.
+    _thread_local = threading.local()
+
+    def _get_worker_model() -> "FasterWhisperModel":
+        if not hasattr(_thread_local, "model"):
+            logger.debug("[Transcriber] Worker thread loading model instance")
+            _thread_local.model = FasterWhisperModel(
+                config.whisper_model,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=threads_per_worker,
+            )
+        return _thread_local.model
+
+    # Write chunk WAV files
     tmp_dir = tempfile.mkdtemp(prefix="whisper_chunks_")
     chunk_paths: list[tuple[float, str]] = []
     try:
         for i, (cs, ce) in enumerate(chunks):
-            frame_start = int(cs * sample_rate)
-            frame_end   = int(ce * sample_rate)
-            chunk_frames = frame_start * bytes_per_frame
-            chunk_end_b  = frame_end   * bytes_per_frame
-            chunk_data   = raw_audio[chunk_frames:chunk_end_b]
-
-            chunk_path = _os.path.join(tmp_dir, f"chunk_{i:04d}.wav")
+            frame_start = int(cs * sample_rate) * bytes_per_frame
+            frame_end   = int(ce * sample_rate) * bytes_per_frame
+            chunk_path  = _os.path.join(tmp_dir, f"chunk_{i:04d}.wav")
             with _wave.open(chunk_path, "wb") as wout:
                 wout.setnchannels(n_channels)
                 wout.setsampwidth(sampwidth)
                 wout.setframerate(sample_rate)
-                wout.writeframes(chunk_data)
+                wout.writeframes(raw_audio[frame_start:frame_end])
             chunk_paths.append((cs, chunk_path))
 
-        # --- Transcribe chunks in parallel ---
         completed = [0]
-        lock = __import__("threading").Lock()
+        lock = threading.Lock()
 
         def _transcribe_chunk(chunk_start: float, chunk_path: str) -> list[Segment]:
-            segs = _transcribe_faster_whisper_single(
-                config, chunk_path, progress_callback=None,
-                cpu_threads=threads_per_worker
+            model = _get_worker_model()
+            raw_segs, _ = model.transcribe(
+                chunk_path,
+                word_timestamps=True,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500),
+                beam_size=1,
+                language=language,
             )
-            # Shift timestamps back to absolute positions, skip overlap duplicates
             adjusted: list[Segment] = []
-            for seg in segs:
+            for seg in raw_segs:
                 abs_start = seg.start + chunk_start
                 abs_end   = seg.end   + chunk_start
-                # Drop segments that fall entirely within the overlap of the previous chunk
+                # Drop segments in the overlap zone of the previous chunk
                 if chunk_start > 0 and abs_start < chunk_start + OVERLAP / 2:
                     continue
-                adjusted.append(Segment(
-                    start=abs_start,
-                    end=abs_end,
-                    text=seg.text,
-                    words=[
-                        WordTimestamp(w.word, w.start + chunk_start, w.end + chunk_start)
-                        for w in (seg.words or [])
-                    ],
-                ))
+                words = [
+                    WordTimestamp(w.word, w.start + chunk_start, w.end + chunk_start)
+                    for w in (seg.words or [])
+                ]
+                adjusted.append(Segment(start=abs_start, end=abs_end, text=seg.text, words=words))
+
             with lock:
                 completed[0] += 1
                 if progress_callback and audio_duration:
@@ -341,19 +344,13 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
 
         all_segments: list[Segment] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as pool:
-            futures = [
-                pool.submit(_transcribe_chunk, cs, cp)
-                for cs, cp in chunk_paths
-            ]
+            futures = [pool.submit(_transcribe_chunk, cs, cp) for cs, cp in chunk_paths]
             for fut in concurrent.futures.as_completed(futures):
                 all_segments.extend(fut.result())
 
-        # Sort by start time (parallel completion is unordered)
         all_segments.sort(key=lambda s: s.start)
-
         if progress_callback:
             progress_callback(60)
-
         return all_segments
 
     finally:

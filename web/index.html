@@ -1191,7 +1191,14 @@ function appendLog(line) {
   const span = document.createElement('span');
   span.className = classifyLogLine(line);
   span.textContent = line + '\n';
-  logEl.appendChild(span);
+
+  // If there's an active stage bar, insert the log line before it so the
+  // bar always stays at the bottom and updates remain visible
+  if (_currentStageEl && _currentStageEl.parentNode === logEl) {
+    logEl.insertBefore(span, _currentStageEl);
+  } else {
+    logEl.appendChild(span);
+  }
   logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -1200,14 +1207,24 @@ function appendLogProgress(stageName, stage, total, percentage) {
   const placeholder = logEl.querySelector('.empty-state');
   if (placeholder) placeholder.remove();
 
-  const bar = buildInlineBar(percentage);
+  const bar  = buildInlineBar(percentage);
   const text = `  ▶ ${stageName}  [${bar}]  ${percentage}%  (${stage}/${total})`;
 
   if (_currentStageEl && _lastStageName === stageName) {
     // Update existing line in-place
     _currentStageEl.textContent = text + '\n';
+    // If complete, detach from tracking so next log lines go after it
+    if (percentage >= 100) {
+      _currentStageEl.className = 'log-line-success';
+      _currentStageEl = null;
+      _lastStageName  = null;
+    }
   } else {
-    // New stage — create a new line
+    // Finalize previous stage bar if there was one
+    if (_currentStageEl) {
+      _currentStageEl = null;
+      _lastStageName  = null;
+    }
     const span = document.createElement('span');
     span.className = 'log-line-stage';
     span.textContent = text + '\n';
