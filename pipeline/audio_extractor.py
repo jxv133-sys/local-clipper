@@ -92,6 +92,7 @@ def extract_audio(config: Config, video_path: str) -> str:
     cmd = [
         "ffmpeg",
         "-y",           # overwrite output without prompting
+        "-threads", "0", # use all available CPU cores
         "-i", video_path,
         "-ac", "1",     # mono
         "-ar", "16000", # 16 kHz sample rate

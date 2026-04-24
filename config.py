@@ -185,6 +185,11 @@ class Config:
     hook_stride: int = 2
     # Minimum word count per window to bother calling the LLM
     hook_min_words: int = 5
+    # Minimum LLM score (0.0–1.0) for a window to be considered a hook.
+    # 0.6 ≈ score 6.4/10 — filters out the "meh, maybe" responses small models
+    # tend to give for ordinary speech.  Windows with type=none are also skipped
+    # regardless of score.
+    hook_score_threshold: float = 0.6
     # Genre & platform (Task 6.1 / 6.2)
     # Genre affects scoring weights; platform affects clip length constraints.
     # genre: "gaming" | "podcast" | "comedy" | "auto"

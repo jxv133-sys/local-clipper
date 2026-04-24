@@ -999,7 +999,7 @@ def score_segments(
             window_size=getattr(config, 'hook_window_size', 3),
             stride=getattr(config, 'hook_stride', 2),
             min_words=getattr(config, 'hook_min_words', 5),
-            score_threshold=getattr(config, 'hook_score_threshold', 0.4),
+            score_threshold=getattr(config, 'hook_score_threshold', 0.6),
         )
         if hooks:
             logger.info("Scorer: %d hook(s) detected — applying multiplicative boost", len(hooks))

@@ -127,7 +127,7 @@ def detect_hooks(
     window_size: int = 3,
     stride: int = 2,
     min_words: int = 5,
-    score_threshold: float = 0.4,
+    score_threshold: float = 0.6,
 ) -> list[Hook]:
     """Detect hooks in transcript using sliding window approach.
     
@@ -137,10 +137,11 @@ def detect_hooks(
         window_size: Number of sentences per window (default: 3)
         stride: Number of sentences to slide forward (default: 2, 50% overlap)
         min_words: Minimum words required in window (default: 5)
-        score_threshold: Minimum score to save hook (default: 0.4)
+        score_threshold: Minimum score to save hook (default: 0.6).
+            Windows with hook_type="none" are always skipped regardless of score.
         
     Returns:
-        List of detected hooks with score > threshold
+        List of detected hooks with score > threshold and a recognised hook type
     """
     if not config.llm_enabled:
         logger.info("LLM disabled, skipping hook detection")
@@ -177,6 +178,11 @@ def detect_hooks(
             window_text
         )
         
+        # Skip windows with no identifiable hook pattern — these are almost
+        # always false positives from small models being overly generous.
+        if hook_type == "none":
+            continue
+
         # Only save if above threshold
         if hook_score >= score_threshold:
             hooks.append(Hook(
@@ -188,7 +194,7 @@ def detect_hooks(
             ))
             logger.info(
                 "Hook detected at %.1fs-%.1fs: score=%.2f type=%s text=%r",
-                start_time, end_time, hook_score, hook_type, window_text[:50]
+                start_time, end_time, hook_score, hook_type, window_text
             )
     
     logger.info("Hook detection complete: %d hooks found (threshold=%.2f)", len(hooks), score_threshold)

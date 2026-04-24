@@ -229,16 +229,21 @@ def _transcribe_faster_whisper(config: Config, wav_path: str, progress_callback=
     """
     try:
         # int8 quantization gives ~2x additional speedup on CPU with minimal
-        # accuracy loss for highlight detection purposes
+        # accuracy loss for highlight detection purposes.
+        # cpu_threads=0 tells CTranslate2 to use all available cores.
         cache_key = ("faster-whisper", config.whisper_model)
         if cache_key in _MODEL_CACHE:
             logger.info("[Transcriber] Using cached model (skipping reload)")
             model = _MODEL_CACHE[cache_key]
         else:
+            import os as _os
+            cpu_count = _os.cpu_count() or 4
             model = FasterWhisperModel(
                 config.whisper_model,
                 device="cpu",
                 compute_type="int8",
+                cpu_threads=cpu_count,
+                num_workers=min(cpu_count, 4),  # parallel audio chunk workers
             )
             _MODEL_CACHE[cache_key] = model
     except Exception as exc:

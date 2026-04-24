@@ -126,6 +126,7 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     _run_ffmpeg(
         [
             "ffmpeg", "-y",
+            "-threads", "0",
             "-ss", str(clip.start),
             "-to", str(clip.end),
             "-i", video_path,
@@ -146,6 +147,7 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
         _run_ffmpeg(
             [
                 "ffmpeg", "-y",
+                "-threads", "0",
                 "-ss", str(clip.start),
                 "-to", str(clip.end),
                 "-i", video_path,
@@ -193,7 +195,7 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
     logger.info("ClipExtractor starting — %d clip(s) to extract", len(clips))
     t0_total = time.time()
 
-    max_workers = min(len(clips), 4)
+    max_workers = min(len(clips), os.cpu_count() or 4)
     results: list[tuple[int, str]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
