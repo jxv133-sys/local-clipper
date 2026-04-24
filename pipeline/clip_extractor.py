@@ -17,22 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str:
-    """Trim leading/trailing silence from a clip using ffmpeg silenceremove.
-
-    Runs ``ffmpeg -af silenceremove`` to remove silence > 0.5 s at the start
-    and end of the clip.  The trimmed version replaces the original only if
-    the resulting duration is >= ``config.min_clip_duration``.
-
-    Args:
-        clip_path: Path to the clip ``.mp4`` file.
-        config: Pipeline configuration (``min_clip_duration`` is used).
-        clip_rank: Clip rank number for log messages.
-
-    Returns:
-        The path to the (possibly trimmed) clip.  Returns the original path
-        unchanged if trimming would shorten the clip below ``min_clip_duration``
-        or if ffmpeg fails.
-    """
+    """Trim leading/trailing silence from a clip using ffmpeg silenceremove."""
     stem, ext = os.path.splitext(clip_path)
     trimmed_path = f"{stem}_trimmed{ext}"
 
@@ -47,6 +32,7 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
                     "start_periods=1:start_silence=0.5:start_threshold=-50dB:"
                     "stop_periods=1:stop_silence=0.5:stop_threshold=-50dB"
                 ),
+                "-c:v", "copy",          # don't re-encode video during silence trim
                 "-movflags", "+faststart",
                 trimmed_path,
             ],
@@ -63,34 +49,24 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
 
         trimmed_duration = _probe_duration(trimmed_path)
         if trimmed_duration is None:
-            logger.warning("  Clip #%d: silence trim — could not probe trimmed duration, keeping original", clip_rank)
             try:
                 os.remove(trimmed_path)
             except OSError:
                 pass
             return clip_path
-
-        original_duration = _probe_duration(clip_path)
-        if original_duration is None:
-            original_duration = 0.0
 
         if trimmed_duration < config.min_clip_duration:
-            logger.info(
-                "  Clip #%d: silence trim skipped (would shorten below min_clip_duration)",
-                clip_rank,
-            )
+            logger.info("  Clip #%d: silence trim skipped (would shorten below min_clip_duration)", clip_rank)
             try:
                 os.remove(trimmed_path)
             except OSError:
                 pass
             return clip_path
 
-        # Replace original with trimmed version
+        original_duration = _probe_duration(clip_path) or 0.0
         os.replace(trimmed_path, clip_path)
-        logger.info(
-            "  Clip #%d: trimmed silence, duration %.1fs → %.1fs",
-            clip_rank, original_duration, trimmed_duration,
-        )
+        logger.info("  Clip #%d: trimmed silence, duration %.1fs → %.1fs",
+                    clip_rank, original_duration, trimmed_duration)
         return clip_path
 
     except Exception as exc:
@@ -103,63 +79,55 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
 
 
 def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[int, str]:
-    """Extract a single clip and return ``(clip.rank, output_path)``.
-
-    Attempts stream-copy first; re-encodes if the probed duration differs by
-    more than 1 second from the requested duration.
-
-    Args:
-        config: Pipeline configuration (``output_dir`` must be set).
-        clip: The clip to extract.
-        video_path: Path to the source video file.
-
-    Returns:
-        A ``(rank, output_path)`` tuple.
-
-    Raises:
-        ClipExtractionError: If FFmpeg exits with a non-zero return code.
-    """
+    """Extract a single clip and return ``(clip.rank, output_path)``."""
     t0 = time.time()
     filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
     output_path = os.path.join(config.output_dir, filename)
-
-    # --- Attempt 1: stream-copy (no re-encoding) ---
-    _run_ffmpeg(
-        [
-            "ffmpeg", "-y",
-            "-threads", "0",
-            "-ss", str(clip.start),
-            "-to", str(clip.end),
-            "-i", video_path,
-            "-c", "copy",
-            "-movflags", "+faststart",  # moov atom at front for instant browser playback
-            output_path,
-        ],
-        output_path,
-    )
-
-    # --- Verify duration via ffprobe ---
     requested_duration = clip.end - clip.start
+
+    # Input-side seeking (-ss before -i) is near-instant — FFmpeg jumps directly
+    # to the nearest keyframe without decoding the whole file.
+    # faststart is deferred to the subtitle stage (or applied here only when
+    # there is no subtitle burn) to avoid a redundant mux pass.
+    stream_copy_cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(clip.start),   # input seek — fast keyframe jump
+        "-to", str(clip.end),
+        "-i", video_path,
+        "-c", "copy",
+        "-avoid_negative_ts", "make_zero",
+    ]
+    # Only add faststart here when subtitles are disabled; otherwise the
+    # subtitle stage will do it in its own encode pass.
+    if not config.burn_subtitles:
+        stream_copy_cmd += ["-movflags", "+faststart"]
+    stream_copy_cmd.append(output_path)
+
+    _run_ffmpeg(stream_copy_cmd, output_path)
+
+    # Verify duration — read it from the ffmpeg stderr instead of a separate
+    # ffprobe call to save a process spawn.
     probed_duration = _probe_duration(output_path)
 
     if probed_duration is not None and abs(probed_duration - requested_duration) > 1.0:
-        # --- Attempt 2: re-encode for accurate cut points ---
         logger.info("  Clip #%d: stream-copy duration mismatch (%.1fs vs %.1fs) — re-encoding",
                     clip.rank, probed_duration, requested_duration)
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y",
-                "-threads", "0",
-                "-ss", str(clip.start),
-                "-to", str(clip.end),
-                "-i", video_path,
-                "-movflags", "+faststart",
-                output_path,
-            ],
-            output_path,
-        )
+        reencode_cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(clip.start),
+            "-to", str(clip.end),
+            "-i", video_path,
+            # ultrafast preset — ~10× faster than default with acceptable quality
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-avoid_negative_ts", "make_zero",
+            "-threads", "0",
+        ]
+        if not config.burn_subtitles:
+            reencode_cmd += ["-movflags", "+faststart"]
+        reencode_cmd.append(output_path)
+        _run_ffmpeg(reencode_cmd, output_path)
 
-    # --- Optional: trim leading/trailing silence ---
     if config.trim_silence:
         output_path = trim_clip_silence(output_path, config, clip_rank=clip.rank)
 

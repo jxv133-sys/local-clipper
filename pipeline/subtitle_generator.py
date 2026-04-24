@@ -383,7 +383,9 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
             "-filter_complex", filter_complex,
             "-map", "[vout]",
             "-map", "0:a:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "copy",
+            "-threads", "0",
             "-movflags", "+faststart",
         ]
         # Pin output duration to source so still-image inputs can't truncate audio
