@@ -87,14 +87,17 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
 
     # Input-side seeking (-ss before -i) is near-instant — FFmpeg jumps directly
     # to the nearest keyframe without decoding the whole file.
-    # faststart is deferred to the subtitle stage (or applied here only when
-    # there is no subtitle burn) to avoid a redundant mux pass.
+    # However, for better audio handling, we'll use output-side seeking for audio
+    # and add explicit audio stream mapping to prevent audio issues.
     stream_copy_cmd = [
         "ffmpeg", "-y",
         "-ss", str(clip.start),   # input seek — fast keyframe jump
-        "-to", str(clip.end),
         "-i", video_path,
-        "-c", "copy",
+        "-t", str(requested_duration),  # use -t instead of -to for more reliable duration
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-map", "0:v:0",  # explicitly map first video stream
+        "-map", "0:a:0",  # explicitly map first audio stream
         "-avoid_negative_ts", "make_zero",
     ]
     # Only add faststart here when subtitles are disabled; otherwise the
@@ -115,11 +118,13 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
         reencode_cmd = [
             "ffmpeg", "-y",
             "-ss", str(clip.start),
-            "-to", str(clip.end),
             "-i", video_path,
+            "-t", str(requested_duration),  # use -t instead of -to for consistency
             # ultrafast preset — ~10× faster than default with acceptable quality
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k",
+            "-map", "0:v:0",  # explicitly map first video stream
+            "-map", "0:a:0",  # explicitly map first audio stream
             "-avoid_negative_ts", "make_zero",
             "-threads", "0",
         ]
