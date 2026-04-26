@@ -257,8 +257,7 @@ def generate_thumbnail(clip_path: str) -> str | None:
     """Generate a JPEG thumbnail at the midpoint of a clip.
 
     Uses ffprobe to determine the clip duration, then extracts a single frame
-    at the midpoint with ffmpeg.  Falls back to 1.0 s if the duration cannot
-    be determined.
+    at the midpoint with ffmpeg.  Falls back to multiple positions if seeking fails.
 
     The thumbnail is saved alongside the clip as ``<clip_stem>_thumb.jpg``.
 
@@ -271,30 +270,52 @@ def generate_thumbnail(clip_path: str) -> str | None:
     """
     try:
         duration = _probe_duration(clip_path)
-        mid = (duration / 2.0) if (duration is not None and duration > 0) else 1.0
+        
+        # Determine seek positions to try
+        if duration is not None and duration > 2.0:
+            # If we have duration info, try midpoint first, then fallbacks
+            seek_positions = [duration / 2.0, 1.0, 0.5]
+        else:
+            # If no duration info, try conservative positions
+            seek_positions = [1.0, 0.5, 0.1]
 
         stem = os.path.splitext(clip_path)[0]
         thumb_path = f"{stem}_thumb.jpg"
 
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-ss", str(mid),
-                "-i", clip_path,
-                "-frames:v", "1",
-                "-q:v", "2",
-                thumb_path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if result.returncode != 0:
-            logger.warning("Thumbnail generation failed for %s: %s", clip_path, result.stderr.strip())
-            return None
+        # Try each seek position until one succeeds
+        for seek_pos in seek_positions:
+            try:
+                result = subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-ss", str(seek_pos),
+                        "-i", clip_path,
+                        "-frames:v", "1",
+                        "-q:v", "2",
+                        "-f", "image2",  # Explicitly specify output format
+                        thumb_path,
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=10,  # Add timeout to prevent hanging
+                )
+                
+                if result.returncode == 0:
+                    logger.info("  Thumbnail: %s (seek position: %.1fs)", thumb_path, seek_pos)
+                    return thumb_path
+                    
+            except subprocess.TimeoutExpired:
+                logger.warning("Thumbnail generation timed out for %s at position %.1fs", clip_path, seek_pos)
+                continue
+            except Exception:
+                # Continue to next position on any error
+                continue
 
-        logger.info("  Thumbnail: %s", thumb_path)
-        return thumb_path
+        # If all positions failed, log the last error
+        logger.warning("Thumbnail generation failed for %s: could not seek to any position", clip_path)
+        return None
+        
     except Exception as exc:
         logger.warning("Thumbnail generation error for %s: %s", clip_path, exc)
         return None
