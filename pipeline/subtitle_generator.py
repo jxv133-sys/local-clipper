@@ -283,6 +283,17 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
 
     tmp_dir = tempfile.mkdtemp(prefix="subs_")
     try:
+        # Probe source clip duration so image inputs don't truncate the output
+        probe_dur = subprocess.run(
+            [ffmpeg_bin, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            clip_duration = float(probe_dur.stdout.strip())
+        except (ValueError, AttributeError):
+            clip_duration = None
+
         # Build a filter_complex with one overlay per subtitle entry
         # Each subtitle is a PNG image shown only during its time window
         overlay_inputs: list[str] = []
@@ -348,23 +359,12 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
             png_path = os.path.join(tmp_dir, f"sub_{i:04d}.png")
             img.save(png_path)
 
-            input_args += ["-i", png_path]
+            input_args += ["-loop", "1", "-t", str(clip_duration) if clip_duration else "60", "-i", png_path]
             overlay_inputs.append((i + 1, entry.start, entry.end))
 
         if not overlay_inputs:
             _shutil.copy2(video_path, output_path)
             return
-
-        # Probe source clip duration so image inputs don't truncate the output
-        probe_dur = subprocess.run(
-            [ffmpeg_bin, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        try:
-            clip_duration = float(probe_dur.stdout.strip())
-        except (ValueError, AttributeError):
-            clip_duration = None
 
         # Build filter_complex: chain overlays
         # [0:v][1]overlay=enable='between(t,s,e)'[v1]; [v1][2]overlay=...
