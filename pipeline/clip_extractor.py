@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import os
 import subprocess
@@ -98,24 +99,52 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     logger.info("  Clip #%d: config.output_dir='%s', filename='%s', output_path='%s'", 
                 clip.rank, config.output_dir, filename, output_path)
 
-    # Use a hybrid seeking approach: input-side for speed, but ensure audio is preserved
-    # by being more explicit about stream handling and using safer parameters
-    stream_copy_cmd = [
-        "ffmpeg", "-y",
-        "-ss", str(clip.start),   # input seek — fast keyframe jump
-        "-i", video_path,
-        "-t", str(requested_duration),  # use -t instead of -to for more reliable duration
-        "-c", "copy",  # copy all streams
-        "-avoid_negative_ts", "make_zero",
-        "-copyts",  # copy timestamps to maintain sync
-    ]
-    # Only add faststart here when subtitles are disabled; otherwise the
-    # subtitle stage will do it in its own encode pass.
-    if not config.burn_subtitles:
-        stream_copy_cmd += ["-movflags", "+faststart"]
-    stream_copy_cmd.append(output_path)
+    # Try stream copy with explicit stream mapping first
+    try:
+        stream_copy_cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(clip.start),   # input seek — fast keyframe jump
+            "-i", video_path,
+            "-t", str(requested_duration),  # use -t instead of -to for more reliable duration
+            "-map", "0:v:0",  # explicitly map first video stream
+            "-map", "0:a:0",  # explicitly map first audio stream
+            "-c", "copy",  # copy all streams
+            "-avoid_negative_ts", "make_zero",
+            "-copyts",  # copy timestamps to maintain sync
+        ]
+        # Only add faststart here when subtitles are disabled; otherwise the
+        # subtitle stage will do it in its own encode pass.
+        if not config.burn_subtitles:
+            stream_copy_cmd += ["-movflags", "+faststart"]
+        stream_copy_cmd.append(output_path)
 
-    _run_ffmpeg(stream_copy_cmd, output_path)
+        _run_ffmpeg(stream_copy_cmd, output_path)
+        
+        # Verify the clip has actual video/audio streams, not just timecode
+        if not _verify_clip_streams(output_path):
+            logger.warning("  Clip #%d: stream copy produced corrupted file, trying output-side seeking", clip.rank)
+            raise ClipExtractionError("Stream copy produced corrupted file")
+            
+    except ClipExtractionError:
+        # Fallback to output-side seeking with re-encoding for problematic positions
+        logger.info("  Clip #%d: input-side seeking failed, using output-side seeking with re-encoding", clip.rank)
+        fallback_cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-ss", str(clip.start),   # output seek — more accurate but slower
+            "-t", str(requested_duration),
+            "-map", "0:v:0",  # explicitly map first video stream
+            "-map", "0:a:0",  # explicitly map first audio stream
+            # ultrafast preset — ~10× faster than default with acceptable quality
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-avoid_negative_ts", "make_zero",
+            "-threads", "0",
+        ]
+        if not config.burn_subtitles:
+            fallback_cmd += ["-movflags", "+faststart"]
+        fallback_cmd.append(output_path)
+        _run_ffmpeg(fallback_cmd, output_path)
 
     # Verify duration — read it from the ffmpeg stderr instead of a separate
     # ffprobe call to save a process spawn.
@@ -129,6 +158,8 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
             "-ss", str(clip.start),
             "-i", video_path,
             "-t", str(requested_duration),  # use -t instead of -to for consistency
+            "-map", "0:v:0",  # explicitly map first video stream
+            "-map", "0:a:0",  # explicitly map first audio stream
             # ultrafast preset — ~10× faster than default with acceptable quality
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k",
@@ -199,6 +230,36 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
 
     logger.info("ClipExtractor complete — %d clip(s) in %.1fs", len(output_paths), time.time() - t0_total)
     return output_paths
+
+
+def _verify_clip_streams(output_path: str) -> bool:
+    """Verify that a clip has actual video and audio streams, not just timecode data.
+    
+    Args:
+        output_path: Path to the clip file to verify.
+        
+    Returns:
+        True if the clip has both video and audio streams, False otherwise.
+    """
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "quiet", "-print_format", "json", 
+            "-show_streams", output_path
+        ], capture_output=True, text=True, timeout=10)
+        
+        if result.returncode != 0:
+            return False
+            
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+        
+        has_video = any(s.get("codec_type") == "video" for s in streams)
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
+        
+        return has_video and has_audio
+        
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+        return False
 
 
 def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
