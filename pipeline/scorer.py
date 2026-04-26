@@ -553,18 +553,18 @@ def combine_scores(
 def _call_llm(config: Config, prompt: str) -> str:
     payload = {"model": config.llm_model, "prompt": prompt, "stream": False}
 
-    # Attempt 1: 30-second timeout
+    # Attempt 1: 60-second timeout (increased from 30s)
     try:
-        response = requests.post(config.llm_endpoint, json=payload, timeout=30)
+        response = requests.post(config.llm_endpoint, json=payload, timeout=60)
     except requests.ConnectionError as exc:
         raise LLMScoringError(
             f"LLM endpoint unreachable at {config.llm_endpoint!r}: {exc}"
         ) from exc
     except requests.Timeout:
-        # Retry once with a shorter timeout
-        logger.warning("[Scorer] LLM call timed out, retrying (attempt 2/2)…")
+        # Retry once with a 45-second timeout (increased from 15s)
+        logger.warning("[Scorer] LLM call timed out after 60s, retrying with 45s timeout (attempt 2/2)…")
         try:
-            response = requests.post(config.llm_endpoint, json=payload, timeout=15)
+            response = requests.post(config.llm_endpoint, json=payload, timeout=45)
         except (requests.ConnectionError, requests.Timeout) as exc:
             raise LLMScoringError(
                 f"LLM endpoint unreachable at {config.llm_endpoint!r}: {exc}"

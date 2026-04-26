@@ -220,10 +220,10 @@ class TestComputeLLMScore:
             score, meta = compute_llm_score_with_context(config, 2, segs)
 
         assert abs(score - 0.7) < 1e-9
-        # First call uses 30s timeout, retry uses 15s timeout
+        # First call uses 60s timeout, retry uses 45s timeout
         assert mock_post.call_count == 2
-        assert mock_post.call_args_list[0][1]["timeout"] == 30
-        assert mock_post.call_args_list[1][1]["timeout"] == 15
+        assert mock_post.call_args_list[0][1]["timeout"] == 60
+        assert mock_post.call_args_list[1][1]["timeout"] == 45
 
     def test_retry_log_message_emitted(self, caplog) -> None:
         """On first timeout, the retry log message is emitted."""
@@ -238,7 +238,7 @@ class TestComputeLLMScore:
             with patch("pipeline.scorer.requests.post", side_effect=side_effects):
                 compute_llm_score_with_context(config, 2, segs)
 
-        assert any("retrying (attempt 2/2)" in r.message for r in caplog.records)
+        assert any("retrying with 45s timeout (attempt 2/2)" in r.message for r in caplog.records)
 
     def test_both_timeouts_falls_back_to_zero(self, tmp_path) -> None:
         """Both attempts time out → score_segments falls back to llm_score=0.0."""

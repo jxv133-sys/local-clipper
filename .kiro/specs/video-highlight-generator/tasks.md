@@ -151,8 +151,8 @@
 
 - [x] 23. Retry logic for LLM calls
   - A single timeout currently drops the LLM score to 0.0 with no retry
-  - Retry once with a 15-second timeout after an initial 30-second timeout failure
-  - Log: `[Scorer] LLM call timed out, retrying (attempt 2/2)…`
+  - Retry once with a 45-second timeout after an initial 60-second timeout failure
+  - Log: `[Scorer] LLM call timed out after 60s, retrying with 45s timeout (attempt 2/2)…`
   - Only fall back to 0.0 after both attempts fail
 
 
