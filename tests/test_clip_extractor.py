@@ -341,6 +341,37 @@ class TestGenerateThumbnail:
 # trim_clip_silence tests
 # ---------------------------------------------------------------------------
 
+class TestURLValidation:
+    """Test that URLs are rejected as output directories."""
+
+    def test_rejects_http_url_as_output_dir(self, tmp_path):
+        """HTTP URLs are rejected as output directories."""
+        config = make_config(tmp_path)
+        config.output_dir = "http://example.com"
+        clip = make_clip(rank=1, start=0.0, end=25.0)
+
+        with pytest.raises(ClipExtractionError, match="Invalid output directory.*URL"):
+            extract_clips(config, [clip], "/fake/video.mp4")
+
+    def test_rejects_https_url_as_output_dir(self, tmp_path):
+        """HTTPS URLs are rejected as output directories."""
+        config = make_config(tmp_path)
+        config.output_dir = "https://youtu.be/E98O-HlcjtY"
+        clip = make_clip(rank=1, start=0.0, end=25.0)
+
+        with pytest.raises(ClipExtractionError, match="Invalid output directory.*URL"):
+            extract_clips(config, [clip], "/fake/video.mp4")
+
+    def test_rejects_ftp_url_as_output_dir(self, tmp_path):
+        """FTP URLs are rejected as output directories."""
+        config = make_config(tmp_path)
+        config.output_dir = "ftp://example.com/path"
+        clip = make_clip(rank=1, start=0.0, end=25.0)
+
+        with pytest.raises(ClipExtractionError, match="Invalid output directory.*URL"):
+            extract_clips(config, [clip], "/fake/video.mp4")
+
+
 class TestTrimClipSilence:
     """Tests for trim_clip_silence()."""
 

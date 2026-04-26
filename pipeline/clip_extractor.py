@@ -83,8 +83,20 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     """Extract a single clip and return ``(clip.rank, output_path)``."""
     t0 = time.time()
     filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
+    
+    # Validate that output_dir is not a URL
+    if config.output_dir.startswith(('http://', 'https://', 'ftp://')):
+        raise ClipExtractionError(
+            f"Invalid output directory: '{config.output_dir}'. "
+            f"Output directory must be a local file path, not a URL."
+        )
+    
     output_path = os.path.join(config.output_dir, filename)
     requested_duration = clip.end - clip.start
+
+    # Debug logging to help diagnose path issues
+    logger.info("  Clip #%d: config.output_dir='%s', filename='%s', output_path='%s'", 
+                clip.rank, config.output_dir, filename, output_path)
 
     # Use a hybrid seeking approach: input-side for speed, but ensure audio is preserved
     # by being more explicit about stream handling and using safer parameters

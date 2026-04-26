@@ -508,6 +508,11 @@ def create_job():
     # Build config
     work_dir = tempfile.mkdtemp(prefix="highlight_web_")
     cfg = Config(work_dir=work_dir)
+    
+    # Validate output_dir - ensure it's not a URL
+    if output_dir.startswith(('http://', 'https://', 'ftp://')):
+        return jsonify({"error": f"Invalid output directory: '{output_dir}'. Output directory must be a local file path, not a URL."}), 400
+    
     cfg.output_dir = output_dir
     cfg.whisper_model = whisper_model
     cfg.top_n_clips = top_n

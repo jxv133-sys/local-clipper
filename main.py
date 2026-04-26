@@ -154,6 +154,11 @@ def _run_stage(name: str, fn, *args, **kwargs):
 def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     """Construct a Config from parsed CLI arguments."""
     cfg = Config(work_dir=work_dir)
+    
+    # Validate output_dir - ensure it's not a URL
+    if args.output_dir.startswith(('http://', 'https://', 'ftp://')):
+        raise ValueError(f"Invalid output directory: '{args.output_dir}'. Output directory must be a local file path, not a URL.")
+    
     cfg.output_dir = args.output_dir
     cfg.whisper_model = args.whisper_model
     cfg.top_n_clips = args.top_n
