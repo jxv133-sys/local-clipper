@@ -382,7 +382,7 @@ def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
         cmd = input_args + [
             "-filter_complex", filter_complex,
             "-map", "[vout]",
-            "-map", "0:a:0",
+            "-map", "0:a?",  # map audio if available, ? makes it optional
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "copy",
             "-threads", "0",

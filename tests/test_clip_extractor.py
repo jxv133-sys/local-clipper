@@ -72,7 +72,7 @@ class TestExtractClipsSuccess:
         assert paths[0].startswith(config.output_dir)
 
     def test_ffmpeg_called_with_stream_copy_flags(self, tmp_path):
-        """FFmpeg is invoked with -c:v copy and -c:a copy for stream-copy extraction."""
+        """FFmpeg is invoked with -c copy for stream-copy extraction."""
         config = make_config(tmp_path)
         clip = make_clip(rank=1, start=0.0, end=25.0)
 
@@ -84,8 +84,7 @@ class TestExtractClipsSuccess:
             extract_clips(config, [clip], "/fake/video.mp4")
 
         first_call_cmd = mock_run.call_args_list[0][0][0]
-        assert "-c:v" in first_call_cmd
-        assert "-c:a" in first_call_cmd
+        assert "-c" in first_call_cmd
         assert "copy" in first_call_cmd
 
     def test_multiple_clips_returned_in_rank_order(self, tmp_path):

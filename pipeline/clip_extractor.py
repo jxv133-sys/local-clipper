@@ -33,6 +33,7 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
                     "stop_periods=1:stop_silence=0.5:stop_threshold=-50dB"
                 ),
                 "-c:v", "copy",          # don't re-encode video during silence trim
+                "-c:a", "aac", "-b:a", "128k",  # re-encode audio with silenceremove filter
                 "-movflags", "+faststart",
                 trimmed_path,
             ],
@@ -85,20 +86,16 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     output_path = os.path.join(config.output_dir, filename)
     requested_duration = clip.end - clip.start
 
-    # Input-side seeking (-ss before -i) is near-instant — FFmpeg jumps directly
-    # to the nearest keyframe without decoding the whole file.
-    # However, for better audio handling, we'll use output-side seeking for audio
-    # and add explicit audio stream mapping to prevent audio issues.
+    # Use a hybrid seeking approach: input-side for speed, but ensure audio is preserved
+    # by being more explicit about stream handling and using safer parameters
     stream_copy_cmd = [
         "ffmpeg", "-y",
         "-ss", str(clip.start),   # input seek — fast keyframe jump
         "-i", video_path,
         "-t", str(requested_duration),  # use -t instead of -to for more reliable duration
-        "-c:v", "copy",
-        "-c:a", "copy",
-        "-map", "0:v:0",  # explicitly map first video stream
-        "-map", "0:a:0",  # explicitly map first audio stream
+        "-c", "copy",  # copy all streams
         "-avoid_negative_ts", "make_zero",
+        "-copyts",  # copy timestamps to maintain sync
     ]
     # Only add faststart here when subtitles are disabled; otherwise the
     # subtitle stage will do it in its own encode pass.
@@ -123,9 +120,8 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
             # ultrafast preset — ~10× faster than default with acceptable quality
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k",
-            "-map", "0:v:0",  # explicitly map first video stream
-            "-map", "0:a:0",  # explicitly map first audio stream
             "-avoid_negative_ts", "make_zero",
+            "-copyts",  # copy timestamps to maintain sync
             "-threads", "0",
         ]
         if not config.burn_subtitles:
