@@ -77,7 +77,10 @@ def download_youtube_video(url: str, output_dir: str, max_height: int = 720) -> 
         )
 
     os.makedirs(output_dir, exist_ok=True)
-    out_template = os.path.join(output_dir, "%(title)s.%(ext)s")
+    
+    # Use a safer filename template that sanitizes the title and limits length
+    # This prevents issues with special characters and overly long filenames
+    out_template = os.path.join(output_dir, "%(title).100s.%(ext)s")
 
     # Cap resolution to max_height for faster downloads
     format_selector = (
@@ -94,6 +97,9 @@ def download_youtube_video(url: str, output_dir: str, max_height: int = 720) -> 
         "quiet": False,
         "no_warnings": False,
         "noplaylist": True,   # Only download the single video, not a playlist
+        # Enable filename sanitization to handle special characters
+        "restrictfilenames": True,  # Replace problematic characters with underscores
+        "windowsfilenames": True,   # Ensure compatibility with Windows filesystems
     }
 
     print(f"[YouTube] Downloading (max {max_height}p): {url}", flush=True)
@@ -105,13 +111,35 @@ def download_youtube_video(url: str, output_dir: str, max_height: int = 720) -> 
             info = ydl.extract_info(url, download=True)
             # Resolve the actual filename yt-dlp wrote
             filename = ydl.prepare_filename(info)
-            # yt-dlp may change the extension after merging
-            if not os.path.exists(filename):
-                base = os.path.splitext(filename)[0]
-                filename = base + ".mp4"
-            if not os.path.exists(filename):
-                raise PipelineError(f"Downloaded file not found at expected path: {filename}")
+            
+            # yt-dlp may change the extension after merging, so check multiple possibilities
+            possible_files = [
+                filename,
+                os.path.splitext(filename)[0] + ".mp4",
+                os.path.splitext(filename)[0] + ".mkv",
+                os.path.splitext(filename)[0] + ".webm"
+            ]
+            
+            actual_file = None
+            for possible_file in possible_files:
+                if os.path.exists(possible_file):
+                    actual_file = possible_file
+                    break
+            
+            if actual_file is None:
+                # List files in the directory to help debug
+                files_in_dir = os.listdir(output_dir)
+                raise PipelineError(
+                    f"Downloaded file not found at any expected path. "
+                    f"Expected paths: {possible_files}. "
+                    f"Files in directory: {files_in_dir}"
+                )
+            
+            filename = actual_file
+            
     except yt_dlp.utils.DownloadError as exc:
+        raise PipelineError(f"YouTube download failed: {exc}") from exc
+    except Exception as exc:
         raise PipelineError(f"YouTube download failed: {exc}") from exc
 
     elapsed = time.time() - t0
