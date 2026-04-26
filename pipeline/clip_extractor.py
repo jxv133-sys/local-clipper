@@ -139,7 +139,7 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k",
             "-avoid_negative_ts", "make_zero",
-            "-threads", "0",
+            "-threads", "2",  # Limit threads to reduce system load
         ]
         if not config.burn_subtitles:
             fallback_cmd += ["-movflags", "+faststart"]
@@ -210,7 +210,9 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
     logger.info("ClipExtractor starting — %d clip(s) to extract", len(clips))
     t0_total = time.time()
 
-    max_workers = min(len(clips), os.cpu_count() or 4)
+    # Reduce concurrency to avoid overwhelming system when re-encoding is needed
+    # Most clips may need fallback re-encoding which is CPU-intensive
+    max_workers = min(len(clips), 2)  # Limit to 2 concurrent clips max
     results: list[tuple[int, str]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -276,12 +278,24 @@ def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
         FFMPEG_VERSION is available for version-specific flag selection.
         For example, subtitle codec flags (``-c:s``) changed in FFmpeg 5.x.
     """
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    # Set timeout based on whether this is likely a re-encoding operation
+    is_reencoding = "-c:v" in cmd and "libx264" in cmd
+    timeout = 300 if is_reencoding else 60  # 5 minutes for re-encoding, 1 minute for stream copy
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise ClipExtractionError(
+            f"FFmpeg timed out after {timeout}s while writing '{output_path}'. "
+            f"Command: {' '.join(cmd[:8])}..."
+        )
+        
     if result.returncode != 0:
         raise ClipExtractionError(
             f"FFmpeg failed (exit code {result.returncode}) while writing "
