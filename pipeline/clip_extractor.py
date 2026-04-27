@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str:
-    """Trim leading/trailing silence from a clip using ffmpeg silenceremove."""
+    """Trim leading/trailing silence from a clip using ffmpeg silenceremove.
+    
+    Note: This function re-encodes audio which can sometimes cause issues.
+    Consider disabling silence trimming if audio problems occur.
+    """
     stem, ext = os.path.splitext(clip_path)
     trimmed_path = f"{stem}_trimmed{ext}"
 
@@ -34,6 +38,7 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
                 ),
                 "-c:v", "copy",          # don't re-encode video during silence trim
                 "-c:a", "aac", "-b:a", "128k",  # re-encode audio with silenceremove filter
+                "-shortest",             # Ensure audio and video stay in sync
                 "-movflags", "+faststart",
                 trimmed_path,
             ],
@@ -50,6 +55,7 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
 
         trimmed_duration = _probe_duration(trimmed_path)
         if trimmed_duration is None:
+            logger.warning("  Clip #%d: could not probe trimmed duration — keeping original", clip_rank)
             try:
                 os.remove(trimmed_path)
             except OSError:
@@ -105,10 +111,11 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     _log_input_streams(video_path, clip.rank)
 
     # Always re-encode to H.264/AAC for maximum compatibility and reliability
-    # This ensures audio is never lost due to codec issues
+    # Use accurate seeking to ensure audio is properly extracted
     extract_cmd = [
         "ffmpeg", "-y",
-        "-ss", str(clip.start),        # Seek to start position
+        "-accurate_seek",               # Enable accurate seeking
+        "-ss", str(clip.start),         # Seek to start position
         "-i", video_path,               # Input file
         "-t", str(requested_duration),  # Duration to extract
         "-c:v", "libx264",              # Re-encode video to H.264
