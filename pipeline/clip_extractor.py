@@ -98,12 +98,15 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     logger.info("  Clip #%d: config.output_dir='%s', filename='%s', output_path='%s'", 
                 clip.rank, config.output_dir, filename, output_path)
 
-    # Use simple stream copy approach (similar to commit dd3a111)
+    # Use simple stream copy approach with explicit audio/video stream selection
+    # This ensures both streams are copied even in Docker environments
     stream_copy_cmd = [
         "ffmpeg", "-y",
         "-ss", str(clip.start),
         "-to", str(clip.end),
         "-i", video_path,
+        "-map", "0:v:0",  # Explicitly select first video stream
+        "-map", "0:a:0",  # Explicitly select first audio stream
         "-c", "copy",
     ]
     # Only add faststart here when subtitles are disabled; otherwise the
@@ -126,6 +129,8 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
             "-ss", str(clip.start),
             "-to", str(clip.end),
             "-i", video_path,
+            "-map", "0:v:0",  # Explicitly select first video stream
+            "-map", "0:a:0",  # Explicitly select first audio stream
         ]
         if not config.burn_subtitles:
             reencode_cmd += ["-movflags", "+faststart"]
