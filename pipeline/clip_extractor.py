@@ -122,6 +122,11 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
 
     # Log what streams were created in the output file
     _log_output_streams(output_path, clip.rank)
+    
+    # Check if we need to re-encode for compatibility (e.g., AV1 -> H.264)
+    if _needs_compatibility_reencode(output_path):
+        logger.info("  Clip #%d: Re-encoding for compatibility (AV1 -> H.264)", clip.rank)
+        output_path = _reencode_for_compatibility(output_path, config, clip.rank)
 
     # Verify duration — read it from the ffmpeg stderr instead of a separate
     # ffprobe call to save a process spawn.
@@ -249,6 +254,104 @@ def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
             f"FFmpeg failed (exit code {result.returncode}) while writing "
             f"'{output_path}'. stderr: {result.stderr.strip()}"
         )
+
+
+def _needs_compatibility_reencode(file_path: str) -> bool:
+    """Check if a video needs re-encoding for better compatibility.
+    
+    Returns True if the video uses AV1 codec which has limited browser/player support.
+    
+    Args:
+        file_path: Path to the video file to check.
+        
+    Returns:
+        True if re-encoding is recommended, False otherwise.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams",
+                "-select_streams", "v:0",
+                file_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            streams = data.get("streams", [])
+            
+            if streams:
+                codec_name = streams[0].get("codec_name", "")
+                # AV1 has limited browser/player support, re-encode to H.264
+                return codec_name == "av1"
+                
+    except Exception:
+        pass
+        
+    return False
+
+
+def _reencode_for_compatibility(file_path: str, config: Config, clip_rank: int = 0) -> str:
+    """Re-encode a video to H.264 for better compatibility.
+    
+    Args:
+        file_path: Path to the video file to re-encode.
+        config: Pipeline configuration.
+        clip_rank: Clip rank for logging.
+        
+    Returns:
+        Path to the re-encoded file (replaces original).
+    """
+    stem, ext = os.path.splitext(file_path)
+    temp_path = f"{stem}_compat{ext}"
+    
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", file_path,
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                temp_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=300,
+        )
+        
+        if result.returncode == 0:
+            # Replace original with re-encoded version
+            os.replace(temp_path, file_path)
+            logger.info("  Clip #%d: Re-encoded to H.264 for compatibility", clip_rank)
+            return file_path
+        else:
+            logger.warning("  Clip #%d: Compatibility re-encode failed, keeping original", clip_rank)
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            return file_path
+            
+    except Exception as exc:
+        logger.warning("  Clip #%d: Compatibility re-encode error: %s", clip_rank, exc)
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        return file_path
 
 
 def _log_input_streams(file_path: str, clip_rank: int = 0) -> None:
