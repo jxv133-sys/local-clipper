@@ -97,6 +97,9 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     # Debug logging to help diagnose path issues
     logger.info("  Clip #%d: config.output_dir='%s', filename='%s', output_path='%s'", 
                 clip.rank, config.output_dir, filename, output_path)
+    
+    # Log input file streams for debugging
+    _log_input_streams(video_path, clip.rank)
 
     # Use simple stream copy approach with explicit audio/video stream selection
     # This ensures both streams are copied even in Docker environments
@@ -116,6 +119,9 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     stream_copy_cmd.append(output_path)
 
     _run_ffmpeg(stream_copy_cmd, output_path)
+
+    # Log what streams were created in the output file
+    _log_output_streams(output_path, clip.rank)
 
     # Verify duration — read it from the ffmpeg stderr instead of a separate
     # ffprobe call to save a process spawn.
@@ -213,6 +219,9 @@ def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
         FFMPEG_VERSION is available for version-specific flag selection.
         For example, subtitle codec flags (``-c:s``) changed in FFmpeg 5.x.
     """
+    # Log the full FFmpeg command for debugging
+    logger.info("Running FFmpeg command: %s", " ".join(cmd))
+    
     # Set timeout based on whether this is likely a re-encoding operation
     is_reencoding = "-c:v" in cmd and "libx264" in cmd
     timeout = 300 if is_reencoding else 60  # 5 minutes for re-encoding, 1 minute for stream copy
@@ -230,12 +239,98 @@ def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
             f"FFmpeg timed out after {timeout}s while writing '{output_path}'. "
             f"Command: {' '.join(cmd[:8])}..."
         )
+    
+    # Log FFmpeg stderr output (contains useful info even on success)
+    if result.stderr:
+        logger.info("FFmpeg stderr output:\n%s", result.stderr.strip())
         
     if result.returncode != 0:
         raise ClipExtractionError(
             f"FFmpeg failed (exit code {result.returncode}) while writing "
             f"'{output_path}'. stderr: {result.stderr.strip()}"
         )
+
+
+def _log_input_streams(file_path: str, clip_rank: int = 0) -> None:
+    """Log the streams present in an input file for debugging.
+    
+    Args:
+        file_path: Path to the input file to inspect.
+        clip_rank: Clip rank for logging context.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams",
+                file_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            streams = data.get("streams", [])
+            
+            stream_info = []
+            for i, s in enumerate(streams):
+                codec_type = s.get("codec_type", "unknown")
+                codec_name = s.get("codec_name", "unknown")
+                stream_info.append(f"#{i}:{codec_type}:{codec_name}")
+            
+            logger.info("  Clip #%d: Input file streams: %s", clip_rank, ", ".join(stream_info))
+        else:
+            logger.warning("  Clip #%d: Could not probe input streams", clip_rank)
+            
+    except Exception as exc:
+        logger.warning("  Clip #%d: Error probing input streams: %s", clip_rank, exc)
+
+
+def _log_output_streams(file_path: str, clip_rank: int = 0) -> None:
+    """Log the streams present in an output file for debugging.
+    
+    Args:
+        file_path: Path to the output file to inspect.
+        clip_rank: Clip rank for logging context.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams",
+                file_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            streams = data.get("streams", [])
+            
+            stream_info = []
+            for s in streams:
+                codec_type = s.get("codec_type", "unknown")
+                codec_name = s.get("codec_name", "unknown")
+                stream_info.append(f"{codec_type}:{codec_name}")
+            
+            logger.info("  Clip #%d: Output file streams: %s", clip_rank, ", ".join(stream_info))
+        else:
+            logger.warning("  Clip #%d: Could not probe output streams", clip_rank)
+            
+    except Exception as exc:
+        logger.warning("  Clip #%d: Error probing output streams: %s", clip_rank, exc)
 
 
 def _probe_duration(file_path: str) -> float | None:
