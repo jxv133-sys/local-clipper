@@ -127,6 +127,9 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     if _needs_compatibility_reencode(output_path):
         logger.info("  Clip #%d: Re-encoding for compatibility (AV1 -> H.264)", clip.rank)
         output_path = _reencode_for_compatibility(output_path, config, clip.rank)
+        # Log final output streams after re-encoding
+        logger.info("  Clip #%d: Final output after re-encoding:", clip.rank)
+        _log_output_streams(output_path, clip.rank)
 
     # Verify duration — read it from the ffmpeg stderr instead of a separate
     # ffprobe call to save a process spawn.
@@ -314,18 +317,26 @@ def _reencode_for_compatibility(file_path: str, config: Config, clip_rank: int =
     temp_path = f"{stem}_compat{ext}"
     
     try:
+        logger.info("  Clip #%d: Starting AV1 -> H.264 re-encode for compatibility", clip_rank)
+        
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", file_path,
+            "-map", "0:v:0",  # Explicitly map video stream
+            "-map", "0:a:0",  # Explicitly map audio stream
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            temp_path,
+        ]
+        
+        logger.info("  Clip #%d: Re-encode command: %s", clip_rank, " ".join(cmd))
+        
         result = subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", file_path,
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                temp_path,
-            ],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -333,12 +344,20 @@ def _reencode_for_compatibility(file_path: str, config: Config, clip_rank: int =
         )
         
         if result.returncode == 0:
+            # Log the re-encode output
+            if result.stderr:
+                logger.info("  Clip #%d: Re-encode stderr:\n%s", clip_rank, result.stderr.strip())
+            
+            # Verify the re-encoded file has both streams
+            _log_output_streams(temp_path, clip_rank)
+            
             # Replace original with re-encoded version
             os.replace(temp_path, file_path)
-            logger.info("  Clip #%d: Re-encoded to H.264 for compatibility", clip_rank)
+            logger.info("  Clip #%d: Successfully re-encoded to H.264 for compatibility", clip_rank)
             return file_path
         else:
-            logger.warning("  Clip #%d: Compatibility re-encode failed, keeping original", clip_rank)
+            logger.warning("  Clip #%d: Compatibility re-encode failed (exit code %d), keeping original. stderr: %s", 
+                          clip_rank, result.returncode, result.stderr.strip())
             try:
                 os.remove(temp_path)
             except OSError:
