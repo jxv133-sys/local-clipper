@@ -669,6 +669,16 @@
             </div>
           </div>
 
+          <div class="full">
+            <div class="toggle-row">
+              <input type="checkbox" id="opt-trim-silence" checked />
+              <label for="opt-trim-silence" style="margin:0">Trim silence from clips</label>
+            </div>
+            <div style="font-size:0.72rem;color:var(--dim);margin-top:3px">
+              Remove leading/trailing silence from extracted clips
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -1038,6 +1048,7 @@ runBtn.addEventListener('click', async () => {
     fd.append('genre',         document.getElementById('opt-genre').value);
     fd.append('platform',      document.getElementById('opt-platform').value);
     fd.append('language',      document.getElementById('opt-language').value);
+    fd.append('trim_silence',  document.getElementById('opt-trim-silence').checked ? 'true' : 'false');
     fd.append('text_weight',       document.getElementById('adv-text-weight').value);
     fd.append('audio_weight',      document.getElementById('adv-audio-weight').value);
     fd.append('min_text_score',    document.getElementById('adv-min-text-score').value);
@@ -1091,6 +1102,7 @@ runBtn.addEventListener('click', async () => {
   fd.append('genre',         document.getElementById('opt-genre').value);
   fd.append('platform',      document.getElementById('opt-platform').value);
   fd.append('language',      document.getElementById('opt-language').value);
+  fd.append('trim_silence',  document.getElementById('opt-trim-silence').checked ? 'true' : 'false');
   // Advanced settings
   fd.append('text_weight',       document.getElementById('adv-text-weight').value);
   fd.append('audio_weight',      document.getElementById('adv-audio-weight').value);
@@ -1513,6 +1525,9 @@ async function rerunJob(jobId) {
 
     const subtitlesEl = document.getElementById('opt-subtitles');
     subtitlesEl.checked = opts.burn_subtitles !== false;
+
+    const trimSilenceEl = document.getElementById('opt-trim-silence');
+    trimSilenceEl.checked = opts.trim_silence !== false;
 
     const genreEl = document.getElementById('opt-genre');
     if (opts.genre) genreEl.value = opts.genre;

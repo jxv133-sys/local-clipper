@@ -306,6 +306,15 @@ class HighlightGeneratorApp(tk.Tk):
             relief="flat", font=("Helvetica", 10), width=14
         ).pack(side="left", ipady=4))
 
+        # Trim silence toggle
+        self._trim_silence_var = tk.BooleanVar(value=True)
+        def trim_silence_row(r):
+            tk.Checkbutton(r, variable=self._trim_silence_var, text="Trim silence from clips",
+                           bg=SURFACE, fg=TEXT, selectcolor=SURFACE,
+                           activebackground=SURFACE, activeforeground=TEXT,
+                           font=("Helvetica", 10)).pack(side="left")
+        row("Silence trim:", trim_silence_row)
+
     def _build_run_section(self, parent) -> None:
         frame = tk.Frame(parent, bg=BG, pady=12)
         frame.pack(fill="x")
@@ -408,6 +417,7 @@ class HighlightGeneratorApp(tk.Tk):
         cfg.top_n_clips = self._topn_var.get()
         cfg.llm_enabled = self._llm_var.get()
         cfg.llm_model = self._llm_model_var.get()
+        cfg.trim_silence = self._trim_silence_var.get()
 
         raw_kw = self._keywords_var.get()
         if raw_kw.strip():

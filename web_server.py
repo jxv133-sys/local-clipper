@@ -475,6 +475,7 @@ def create_job():
     llm_model = request.form.get("llm_model", "llama3")
     output_dir = request.form.get("output_dir", "").strip() or str(OUTPUT_DIR)
     burn_subtitles = request.form.get("burn_subtitles", "true").lower() != "false"
+    trim_silence = request.form.get("trim_silence", "true").lower() != "false"
     genre = request.form.get("genre", "auto").strip() or "auto"
     platform = request.form.get("platform", "none").strip() or "none"
     language = request.form.get("language", "auto").strip() or "auto"
@@ -519,6 +520,7 @@ def create_job():
     cfg.llm_enabled = llm_enabled
     cfg.llm_model = llm_model
     cfg.burn_subtitles = burn_subtitles
+    cfg.trim_silence = trim_silence
     cfg.genre = genre
     cfg.platform = platform
     cfg.language = language
@@ -564,6 +566,7 @@ def create_job():
         "llm_model": llm_model,
         "output_dir": output_dir,
         "burn_subtitles": burn_subtitles,
+        "trim_silence": trim_silence,
         "genre": genre,
         "platform": platform,
         "language": language,
