@@ -80,7 +80,11 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
 
 
 def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[int, str]:
-    """Extract a single clip and return ``(clip.rank, output_path)``."""
+    """Extract a single clip and return ``(clip.rank, output_path)``.
+    
+    Uses a reliable approach that always re-encodes to H.264/AAC to ensure
+    maximum compatibility and prevent audio issues.
+    """
     t0 = time.time()
     filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
     
@@ -94,62 +98,38 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
     output_path = os.path.join(config.output_dir, filename)
     requested_duration = clip.end - clip.start
 
-    # Debug logging to help diagnose path issues
-    logger.info("  Clip #%d: config.output_dir='%s', filename='%s', output_path='%s'", 
-                clip.rank, config.output_dir, filename, output_path)
+    logger.info("  Clip #%d: Extracting from %.1fs to %.1fs (duration: %.1fs)", 
+                clip.rank, clip.start, clip.end, requested_duration)
     
     # Log input file streams for debugging
     _log_input_streams(video_path, clip.rank)
 
-    # Use simple stream copy approach with explicit audio/video stream selection
-    # This ensures both streams are copied even in Docker environments
-    stream_copy_cmd = [
+    # Always re-encode to H.264/AAC for maximum compatibility and reliability
+    # This ensures audio is never lost due to codec issues
+    extract_cmd = [
         "ffmpeg", "-y",
-        "-ss", str(clip.start),
-        "-to", str(clip.end),
-        "-i", video_path,
-        "-map", "0:v:0",  # Explicitly select first video stream
-        "-map", "0:a:0",  # Explicitly select first audio stream
-        "-c", "copy",
+        "-ss", str(clip.start),        # Seek to start position
+        "-i", video_path,               # Input file
+        "-t", str(requested_duration),  # Duration to extract
+        "-c:v", "libx264",              # Re-encode video to H.264
+        "-preset", "fast",              # Fast encoding preset
+        "-crf", "23",                   # Good quality
+        "-c:a", "aac",                  # Re-encode audio to AAC
+        "-b:a", "128k",                 # Audio bitrate
+        "-movflags", "+faststart",      # Enable fast start for web playback
+        output_path,
     ]
-    # Only add faststart here when subtitles are disabled; otherwise the
-    # subtitle stage will do it in its own encode pass.
-    if not config.burn_subtitles:
-        stream_copy_cmd += ["-movflags", "+faststart"]
-    stream_copy_cmd.append(output_path)
 
-    _run_ffmpeg(stream_copy_cmd, output_path)
+    _run_ffmpeg(extract_cmd, output_path)
 
-    # Log what streams were created in the output file
+    # Verify the output has both video and audio streams
     _log_output_streams(output_path, clip.rank)
-    
-    # Check if we need to re-encode for compatibility (e.g., AV1 -> H.264)
-    if _needs_compatibility_reencode(output_path):
-        logger.info("  Clip #%d: Re-encoding for compatibility (AV1 -> H.264)", clip.rank)
-        output_path = _reencode_for_compatibility(output_path, config, clip.rank)
-        # Log final output streams after re-encoding
-        logger.info("  Clip #%d: Final output after re-encoding:", clip.rank)
-        _log_output_streams(output_path, clip.rank)
 
-    # Verify duration — read it from the ffmpeg stderr instead of a separate
-    # ffprobe call to save a process spawn.
+    # Verify duration
     probed_duration = _probe_duration(output_path)
-
-    if probed_duration is not None and abs(probed_duration - requested_duration) > 1.0:
-        logger.info("  Clip #%d: stream-copy duration mismatch (%.1fs vs %.1fs) — re-encoding",
+    if probed_duration is not None:
+        logger.info("  Clip #%d: Extracted duration: %.1fs (requested: %.1fs)", 
                     clip.rank, probed_duration, requested_duration)
-        reencode_cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(clip.start),
-            "-to", str(clip.end),
-            "-i", video_path,
-            "-map", "0:v:0",  # Explicitly select first video stream
-            "-map", "0:a:0",  # Explicitly select first audio stream
-        ]
-        if not config.burn_subtitles:
-            reencode_cmd += ["-movflags", "+faststart"]
-        reencode_cmd.append(output_path)
-        _run_ffmpeg(reencode_cmd, output_path)
 
     if config.trim_silence:
         output_path = trim_clip_silence(output_path, config, clip_rank=clip.rank)
@@ -162,13 +142,9 @@ def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[i
 def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[str]:
     """Extract each Clip from *video_path* using FFmpeg, running concurrently.
 
-    Attempts stream-copy first to preserve original quality.  If the probed
-    duration of the stream-copied file differs from the requested duration by
-    more than 1 second, re-extracts with re-encoding for accurate cut points.
-
-    Output files are named ``clip_<rank>_<start_seconds>s.mp4`` and written to
-    ``config.output_dir``.  Up to 4 clips are extracted in parallel using a
-    ``ThreadPoolExecutor``; the returned list is always in ascending rank order.
+    Always re-encodes to H.264/AAC for maximum compatibility and to prevent
+    audio issues. Output files are named ``clip_<rank>_<start_seconds>s.mp4``
+    and written to ``config.output_dir``.
 
     Args:
         config: Pipeline configuration (``output_dir`` must be set).
@@ -189,9 +165,8 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
     logger.info("ClipExtractor starting — %d clip(s) to extract", len(clips))
     t0_total = time.time()
 
-    # Reduce concurrency to avoid overwhelming system when re-encoding is needed
-    # Most clips may need fallback re-encoding which is CPU-intensive
-    max_workers = min(len(clips), 2)  # Limit to 2 concurrent clips max
+    # Limit concurrency since we're always re-encoding (CPU intensive)
+    max_workers = min(len(clips), 2)
     results: list[tuple[int, str]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -222,17 +197,12 @@ def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
 
     Raises:
         ClipExtractionError: If FFmpeg exits with a non-zero return code.
-
-    Note:
-        FFMPEG_VERSION is available for version-specific flag selection.
-        For example, subtitle codec flags (``-c:s``) changed in FFmpeg 5.x.
     """
     # Log the full FFmpeg command for debugging
     logger.info("Running FFmpeg command: %s", " ".join(cmd))
     
-    # Set timeout based on whether this is likely a re-encoding operation
-    is_reencoding = "-c:v" in cmd and "libx264" in cmd
-    timeout = 300 if is_reencoding else 60  # 5 minutes for re-encoding, 1 minute for stream copy
+    # Set timeout - 5 minutes should be enough for re-encoding
+    timeout = 300
     
     try:
         result = subprocess.run(
@@ -257,120 +227,6 @@ def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
             f"FFmpeg failed (exit code {result.returncode}) while writing "
             f"'{output_path}'. stderr: {result.stderr.strip()}"
         )
-
-
-def _needs_compatibility_reencode(file_path: str) -> bool:
-    """Check if a video needs re-encoding for better compatibility.
-    
-    Returns True if the video uses AV1 codec which has limited browser/player support.
-    
-    Args:
-        file_path: Path to the video file to check.
-        
-    Returns:
-        True if re-encoding is recommended, False otherwise.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "quiet",
-                "-print_format", "json",
-                "-show_streams",
-                "-select_streams", "v:0",
-                file_path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=10,
-        )
-        
-        if result.returncode == 0:
-            import json
-            data = json.loads(result.stdout)
-            streams = data.get("streams", [])
-            
-            if streams:
-                codec_name = streams[0].get("codec_name", "")
-                # AV1 has limited browser/player support, re-encode to H.264
-                return codec_name == "av1"
-                
-    except Exception:
-        pass
-        
-    return False
-
-
-def _reencode_for_compatibility(file_path: str, config: Config, clip_rank: int = 0) -> str:
-    """Re-encode a video to H.264 for better compatibility.
-    
-    Args:
-        file_path: Path to the video file to re-encode.
-        config: Pipeline configuration.
-        clip_rank: Clip rank for logging.
-        
-    Returns:
-        Path to the re-encoded file (replaces original).
-    """
-    stem, ext = os.path.splitext(file_path)
-    temp_path = f"{stem}_compat{ext}"
-    
-    try:
-        logger.info("  Clip #%d: Starting AV1 -> H.264 re-encode for compatibility", clip_rank)
-        
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", file_path,
-            "-map", "0:v:0",  # Explicitly map video stream
-            "-map", "0:a:0",  # Explicitly map audio stream
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            temp_path,
-        ]
-        
-        logger.info("  Clip #%d: Re-encode command: %s", clip_rank, " ".join(cmd))
-        
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=300,
-        )
-        
-        if result.returncode == 0:
-            # Log the re-encode output
-            if result.stderr:
-                logger.info("  Clip #%d: Re-encode stderr:\n%s", clip_rank, result.stderr.strip())
-            
-            # Verify the re-encoded file has both streams
-            _log_output_streams(temp_path, clip_rank)
-            
-            # Replace original with re-encoded version
-            os.replace(temp_path, file_path)
-            logger.info("  Clip #%d: Successfully re-encoded to H.264 for compatibility", clip_rank)
-            return file_path
-        else:
-            logger.warning("  Clip #%d: Compatibility re-encode failed (exit code %d), keeping original. stderr: %s", 
-                          clip_rank, result.returncode, result.stderr.strip())
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-            return file_path
-            
-    except Exception as exc:
-        logger.warning("  Clip #%d: Compatibility re-encode error: %s", clip_rank, exc)
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-        return file_path
 
 
 def _log_input_streams(file_path: str, clip_rank: int = 0) -> None:
