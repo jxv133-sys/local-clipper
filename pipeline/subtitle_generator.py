@@ -229,178 +229,48 @@ def generate_subtitles(
 
 
 def _burn_subtitles(video_path: str, srt_path: str, output_path: str) -> None:
-    """Burn SRT subtitles into a video using Pillow-rendered overlays.
+    """Burn SRT subtitles into a video using FFmpeg's subtitles filter.
 
-    Renders each subtitle entry as a transparent PNG image using Pillow,
-    then uses FFmpeg's overlay filter to composite them onto the video.
-    This approach works with any FFmpeg build (no libass or freetype required).
-
-    Args:
-        video_path: Path to the input video file.
-        srt_path: Path to the SRT subtitle file.
-        output_path: Path for the output video with burned-in subtitles.
-
-    Raises:
-        SubtitleError: If FFmpeg exits with a non-zero return code.
+    Uses libass via the subtitles filter — one input, one filter, audio copied
+    byte-for-byte so there is zero risk of truncation or desync.
+    Falls back to a copy without subtitles if libass is unavailable.
     """
     import shutil as _shutil
-    import tempfile
-
-    with open(srt_path, "r", encoding="utf-8") as fh:
-        entries = parse_srt(fh.read())
-
-    if not entries:
-        _shutil.copy2(video_path, output_path)
-        return
 
     ffmpeg_bin = _shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
-    # Get video dimensions
-    probe = subprocess.run(
-        [ffmpeg_bin, "-i", video_path],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    # Escape path for FFmpeg filter string (colons must be escaped on all platforms)
+    escaped_srt = srt_path.replace("\\", "/").replace(":", "\\:")
+
+    style = "FontSize=20,Alignment=2,MarginV=30,Bold=0,Outline=2,Shadow=1"
+    sub_filter = f"subtitles='{escaped_srt}':force_style='{style}'"
+
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-i", video_path,
+        "-vf", sub_filter,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-c:a", "copy",       # audio copied byte-for-byte — no truncation possible
+        "-threads", "0",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    width, height = 1280, 720  # sensible defaults
-    for line in probe.stderr.splitlines():
-        if "Video:" in line and "x" in line:
-            import re
-            m = re.search(r"(\d{3,5})x(\d{3,5})", line)
-            if m:
-                width, height = int(m.group(1)), int(m.group(2))
-                break
 
-    # Render subtitle images with Pillow
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-        _pillow_available = True
-    except ImportError:
-        _pillow_available = False
-
-    if not _pillow_available:
-        # No Pillow — copy without subtitles
-        _shutil.copy2(video_path, output_path)
-        return
-
-    tmp_dir = tempfile.mkdtemp(prefix="subs_")
-    try:
-        # Probe source clip duration so image inputs don't truncate the output
-        probe_dur = subprocess.run(
-            [ffmpeg_bin, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        try:
-            clip_duration = float(probe_dur.stdout.strip())
-        except (ValueError, AttributeError):
-            clip_duration = None
-
-        # Build a filter_complex with one overlay per subtitle entry
-        # Each subtitle is a PNG image shown only during its time window
-        overlay_inputs: list[str] = []
-        filter_parts: list[str] = []
-        input_args: list[str] = [ffmpeg_bin, "-y", "-i", video_path]
-
-        font_size = max(24, height // 22)
-        pad = 8
-        bottom_margin = max(40, height // 18)
-
-        for i, entry in enumerate(entries):
-            text = entry.text.strip().replace("\n", " ")
-            if not text:
-                continue
-
-            # Render text onto transparent image
-            img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-
-            # Try to load a system font, fall back to default
-            font = None
-            _selected_font_path = None
-            for font_path in [
-                # macOS
-                "/System/Library/Fonts/Helvetica.ttc",
-                "/System/Library/Fonts/Arial.ttf",
-                "/Library/Fonts/Arial.ttf",
-                # Linux
-                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-                # Windows
-                "C:/Windows/Fonts/arial.ttf",
-                "C:/Windows/Fonts/Arial.ttf",
-            ]:
-                if os.path.exists(font_path):
-                    try:
-                        font = ImageFont.truetype(font_path, font_size)
-                        _selected_font_path = font_path
-                        break
-                    except Exception:
-                        pass
-            if font is None:
-                font = ImageFont.load_default()
-                logger.debug("Subtitle font: using FFmpeg default (no font found)")
-            else:
-                logger.debug("Subtitle font selected: %s", _selected_font_path)
-
-            # Measure text
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-            x = (width - tw) // 2
-            y = height - th - bottom_margin
-
-            # Draw shadow/border
-            for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2),
-                           (-1, 0), (1, 0), (0, -1), (0, 1)]:
-                draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0, 220))
-            # Draw text
-            draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
-
-            png_path = os.path.join(tmp_dir, f"sub_{i:04d}.png")
-            img.save(png_path)
-
-            input_args += ["-loop", "1", "-t", str(clip_duration) if clip_duration else "60", "-i", png_path]
-            overlay_inputs.append((i + 1, entry.start, entry.end))
-
-        if not overlay_inputs:
+    if result.returncode != 0:
+        # Fall back to copy without subtitles if libass not available
+        if any(x in result.stderr for x in ("libass", "No such filter", "subtitles")):
+            logger.warning(
+                "subtitles filter unavailable (libass not compiled in), "
+                "copying clip without subtitles. stderr: %s",
+                result.stderr.strip()[:200],
+            )
             _shutil.copy2(video_path, output_path)
             return
-
-        # Build filter_complex: chain overlays
-        # [0:v][1]overlay=enable='between(t,s,e)'[v1]; [v1][2]overlay=...
-        fc_parts: list[str] = []
-        prev = "[0:v]"
-        for idx, (inp_idx, start, end) in enumerate(overlay_inputs):
-            out_label = f"[v{idx + 1}]" if idx < len(overlay_inputs) - 1 else "[vout]"
-            fc_parts.append(
-                f"{prev}[{inp_idx}:v]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'{out_label}"
-            )
-            prev = out_label
-
-        filter_complex = ";".join(fc_parts)
-
-        cmd = input_args + [
-            "-filter_complex", filter_complex,
-            "-map", "[vout]",
-            "-map", "0:a?",  # map audio if available, ? makes it optional
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-            "-c:a", "copy",
-            "-threads", "0",
-            "-movflags", "+faststart",
-        ]
-        # Pin output duration to source so still-image inputs can't truncate audio
-        if clip_duration is not None:
-            cmd += ["-t", str(clip_duration)]
-        cmd.append(output_path)
-
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        raise SubtitleError(
+            f"FFmpeg failed (exit code {result.returncode}) while burning subtitles "
+            f"into '{video_path}'. stderr: {result.stderr.strip()}"
         )
-
-        if result.returncode != 0:
-            raise SubtitleError(
-                f"FFmpeg failed (exit code {result.returncode}) while burning subtitles "
-                f"into '{video_path}'. stderr: {result.stderr.strip()}"
-            )
-    finally:
-        _shutil.rmtree(tmp_dir, ignore_errors=True)

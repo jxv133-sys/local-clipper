@@ -72,20 +72,16 @@ class TestExtractClipsSuccess:
         assert paths[0].startswith(config.output_dir)
 
     def test_ffmpeg_called_with_stream_copy_flags(self, tmp_path):
-        """FFmpeg is invoked with -c copy for stream-copy extraction."""
+        """FFmpeg is invoked with libx264 re-encode for reliable extraction."""
         config = make_config(tmp_path)
         clip = make_clip(rank=1, start=0.0, end=25.0)
 
         with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                completed(0),
-                completed(0, stdout="25.0\n"),
-            ]
+            mock_run.side_effect = [completed(0)]
             extract_clips(config, [clip], "/fake/video.mp4")
 
         first_call_cmd = mock_run.call_args_list[0][0][0]
-        assert "-c" in first_call_cmd
-        assert "copy" in first_call_cmd
+        assert "libx264" in first_call_cmd
 
     def test_multiple_clips_returned_in_rank_order(self, tmp_path):
         """Multiple clips are returned in ascending rank order."""
@@ -96,11 +92,7 @@ class TestExtractClipsSuccess:
         ]
 
         with patch("subprocess.run") as mock_run:
-            # 2 clips × (1 ffmpeg + 1 ffprobe) = 4 calls
-            mock_run.side_effect = [
-                completed(0), completed(0, stdout="25.0\n"),
-                completed(0), completed(0, stdout="25.0\n"),
-            ]
+            mock_run.side_effect = [completed(0), completed(0)]
             paths = extract_clips(config, clips, "/fake/video.mp4")
 
         assert len(paths) == 2
@@ -114,86 +106,60 @@ class TestOutputDirectoryCreation:
     def test_creates_output_dir_if_missing(self, tmp_path):
         """config.output_dir is created before writing clips."""
         config = make_config(tmp_path)
-        # Ensure the output dir does NOT exist yet
         assert not os.path.exists(config.output_dir)
-
         clip = make_clip(rank=1, start=0.0, end=25.0)
-
         with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                completed(0),
-                completed(0, stdout="25.0\n"),
-            ]
+            mock_run.side_effect = [completed(0)]
             extract_clips(config, [clip], "/fake/video.mp4")
-
         assert os.path.exists(config.output_dir)
 
     def test_does_not_fail_if_output_dir_already_exists(self, tmp_path):
         """No error if output_dir already exists."""
         config = make_config(tmp_path)
         os.makedirs(config.output_dir, exist_ok=True)
-
         clip = make_clip(rank=1, start=0.0, end=25.0)
-
         with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                completed(0),
-                completed(0, stdout="25.0\n"),
-            ]
-            # Should not raise
+            mock_run.side_effect = [completed(0)]
             extract_clips(config, [clip], "/fake/video.mp4")
 
 
 class TestReEncodeOnDurationMismatch:
-    """Re-encode is triggered when stream-copy duration differs by > 1s."""
+    """Single-pass re-encode always produces correct duration."""
 
     def test_reencode_invoked_on_duration_mismatch(self, tmp_path):
-        """When probed duration differs by > 1s, a second FFmpeg call without -c copy is made."""
-        config = make_config(tmp_path)
-        clip = make_clip(rank=1, start=10.0, end=35.0)  # requested = 25s
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                completed(0),                    # ffmpeg stream-copy
-                completed(0, stdout="22.0\n"),   # ffprobe: 22s vs 25s → diff = 3s > 1s
-                completed(0),                    # ffmpeg re-encode
-            ]
-            extract_clips(config, [clip], "/fake/video.mp4")
-
-        assert mock_run.call_count == 3
-        # Third call should NOT have -c copy
-        reencode_cmd = mock_run.call_args_list[2][0][0]
-        assert "-c" not in reencode_cmd or "copy" not in reencode_cmd
-
-    def test_no_reencode_when_duration_within_1s(self, tmp_path):
-        """When probed duration is within 1s of requested, no re-encode occurs."""
-        config = make_config(tmp_path)
-        clip = make_clip(rank=1, start=10.0, end=35.0)  # requested = 25s
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                completed(0),                    # ffmpeg stream-copy
-                completed(0, stdout="24.5\n"),   # ffprobe: 24.5s vs 25s → diff = 0.5s ≤ 1s
-            ]
-            extract_clips(config, [clip], "/fake/video.mp4")
-
-        # Only 2 calls: stream-copy + ffprobe
-        assert mock_run.call_count == 2
-
-    def test_no_reencode_when_ffprobe_fails(self, tmp_path):
-        """When ffprobe fails (returns None), no re-encode is triggered."""
+        """Single FFmpeg call always re-encodes — no stream-copy fallback."""
         config = make_config(tmp_path)
         clip = make_clip(rank=1, start=10.0, end=35.0)
 
         with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                completed(0),          # ffmpeg stream-copy
-                completed(1, stderr="ffprobe error"),  # ffprobe fails
-            ]
+            mock_run.side_effect = [completed(0)]
             extract_clips(config, [clip], "/fake/video.mp4")
 
-        # Only 2 calls: stream-copy + ffprobe (no re-encode since duration is None)
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 1
+        cmd = mock_run.call_args_list[0][0][0]
+        assert "libx264" in cmd
+
+    def test_no_reencode_when_duration_within_1s(self, tmp_path):
+        """Single-pass extraction — always exactly one FFmpeg call."""
+        config = make_config(tmp_path)
+        clip = make_clip(rank=1, start=10.0, end=35.0)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [completed(0)]
+            extract_clips(config, [clip], "/fake/video.mp4")
+
+        assert mock_run.call_count == 1
+
+    def test_no_reencode_when_ffprobe_fails(self, tmp_path):
+        """Single-pass extraction — ffprobe not called during extraction."""
+        config = make_config(tmp_path)
+        clip = make_clip(rank=1, start=10.0, end=35.0)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [completed(0)]
+            extract_clips(config, [clip], "/fake/video.mp4")
+
+        assert mock_run.call_count == 1
 
 
 class TestFFmpegFailure:

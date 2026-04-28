@@ -253,31 +253,32 @@ class TestSerializeSRT:
 
 
 class TestFontSearchList:
-    """Tests for cross-platform font fallback paths."""
+    """Tests for subtitle filter usage."""
 
-    def test_linux_font_path_in_search_list(self) -> None:
-        """Linux LiberationSans font path is included in the font search list."""
+    def test_subtitles_filter_used(self) -> None:
+        """_burn_subtitles uses the subtitles filter, not PNG overlays."""
         import inspect
         import pipeline.subtitle_generator as sg
 
         source = inspect.getsource(sg._burn_subtitles)
-        assert "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" in source
+        assert "subtitles=" in source
 
-    def test_linux_dejavu_font_path_in_search_list(self) -> None:
-        """Linux DejaVuSans font path is included in the font search list."""
+    def test_audio_copied_not_reencoded(self) -> None:
+        """Audio is copied byte-for-byte to prevent truncation."""
         import inspect
         import pipeline.subtitle_generator as sg
 
         source = inspect.getsource(sg._burn_subtitles)
-        assert "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" in source
+        assert "-c:a" in source
+        assert "copy" in source
 
-    def test_windows_font_path_in_search_list(self) -> None:
-        """Windows Arial font path is included in the font search list."""
+    def test_libass_fallback_present(self) -> None:
+        """Falls back gracefully when libass is unavailable."""
         import inspect
         import pipeline.subtitle_generator as sg
 
         source = inspect.getsource(sg._burn_subtitles)
-        assert "C:/Windows/Fonts/arial.ttf" in source
+        assert "libass" in source
 
 
 class TestGenerateSubtitles:

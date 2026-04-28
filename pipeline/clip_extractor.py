@@ -86,57 +86,27 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
 
 
 def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[int, str]:
-    """Extract a single clip and return ``(clip.rank, output_path)``.
-    
-    Uses a reliable approach that always re-encodes to H.264/AAC to ensure
-    maximum compatibility and prevent audio issues.
-    """
+    """Extract a single clip and return ``(clip.rank, output_path)``."""
     t0 = time.time()
     filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
-    
-    # Validate that output_dir is not a URL
-    if config.output_dir.startswith(('http://', 'https://', 'ftp://')):
-        raise ClipExtractionError(
-            f"Invalid output directory: '{config.output_dir}'. "
-            f"Output directory must be a local file path, not a URL."
-        )
-    
     output_path = os.path.join(config.output_dir, filename)
     requested_duration = clip.end - clip.start
 
-    logger.info("  Clip #%d: Extracting from %.1fs to %.1fs (duration: %.1fs)", 
-                clip.rank, clip.start, clip.end, requested_duration)
-    
-    # Log input file streams for debugging
-    _log_input_streams(video_path, clip.rank)
-
-    # Always re-encode to H.264/AAC for maximum compatibility and reliability
-    # Use accurate seeking to ensure audio is properly extracted
+    # Input-side seek (-ss before -i) jumps to nearest keyframe instantly.
+    # Re-encode to H.264/AAC for compatibility; ultrafast keeps it quick.
     extract_cmd = [
         "ffmpeg", "-y",
-        "-accurate_seek",               # Enable accurate seeking
-        "-ss", str(clip.start),         # Seek to start position
-        "-i", video_path,               # Input file
-        "-t", str(requested_duration),  # Duration to extract
-        "-c:v", "libx264",              # Re-encode video to H.264
-        "-preset", "fast",              # Fast encoding preset
-        "-crf", "23",                   # Good quality
-        "-c:a", "aac",                  # Re-encode audio to AAC
-        "-b:a", "128k",                 # Audio bitrate
-        "-movflags", "+faststart",      # Enable fast start for web playback
+        "-ss", str(clip.start),
+        "-i", video_path,
+        "-t", str(requested_duration),
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-avoid_negative_ts", "make_zero",
+        "-movflags", "+faststart",
         output_path,
     ]
 
     _run_ffmpeg(extract_cmd, output_path)
-
-    # Verify the output has both video and audio streams
-    _log_output_streams(output_path, clip.rank)
-
-    # Verify duration
-    probed_duration = _probe_duration(output_path)
-    if probed_duration is not None:
-        logger.info("  Clip #%d: Extracted duration: %.1fs (requested: %.1fs)", 
-                    clip.rank, probed_duration, requested_duration)
 
     if config.trim_silence:
         output_path = trim_clip_silence(output_path, config, clip_rank=clip.rank)
@@ -167,13 +137,19 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
     if not clips:
         return []
 
+    # Validate output_dir before any work
+    if config.output_dir.startswith(('http://', 'https://', 'ftp://')):
+        raise ClipExtractionError(
+            f"Invalid output directory: '{config.output_dir}'. "
+            f"Output directory must be a local file path, not a URL."
+        )
+
     os.makedirs(config.output_dir, exist_ok=True)
 
     logger.info("ClipExtractor starting — %d clip(s) to extract", len(clips))
     t0_total = time.time()
 
-    # Limit concurrency since we're always re-encoding (CPU intensive)
-    max_workers = min(len(clips), 2)
+    max_workers = min(len(clips), os.cpu_count() or 4)
     results: list[tuple[int, str]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -196,39 +172,13 @@ def extract_clips(config: Config, clips: list[Clip], video_path: str) -> list[st
 
 
 def _run_ffmpeg(cmd: list[str], output_path: str) -> None:
-    """Run an FFmpeg command and raise ClipExtractionError on failure.
-
-    Args:
-        cmd: The FFmpeg command as a list of strings.
-        output_path: The expected output file path (used in error messages).
-
-    Raises:
-        ClipExtractionError: If FFmpeg exits with a non-zero return code.
-    """
-    # Log the full FFmpeg command for debugging
-    logger.info("Running FFmpeg command: %s", " ".join(cmd))
-    
-    # Set timeout - 5 minutes should be enough for re-encoding
-    timeout = 300
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        raise ClipExtractionError(
-            f"FFmpeg timed out after {timeout}s while writing '{output_path}'. "
-            f"Command: {' '.join(cmd[:8])}..."
-        )
-    
-    # Log FFmpeg stderr output (contains useful info even on success)
-    if result.stderr:
-        logger.info("FFmpeg stderr output:\n%s", result.stderr.strip())
-        
+    """Run an FFmpeg command and raise ClipExtractionError on failure."""
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     if result.returncode != 0:
         raise ClipExtractionError(
             f"FFmpeg failed (exit code {result.returncode}) while writing "
