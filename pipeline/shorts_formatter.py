@@ -218,6 +218,8 @@ class ShortsFormatter:
 
         # --- Step 6: Assemble filter_complex ---
         # Chain: canvas → facecam overlay → subtitle burn
+        # The facecam filter takes [0:v] (for cropping the facecam) and [canvas] (for overlay)
+        # The subtitle filter takes [with_facecam] and produces [final]
         filter_complex = (
             canvas_frag.filter_str
             + ";"
@@ -243,14 +245,25 @@ class ShortsFormatter:
 
         logger.info("Running FFmpeg for shorts clip: %s", shorts_path)
         logger.debug("FFmpeg command: %s", cmd)
+        logger.debug("Filter complex: %s", filter_complex)
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=600,  # 10 minute timeout per clip
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ShortsFormattingError(
+                f"FFmpeg timeout for {clip_path!r} (exceeded 600s):\n"
+                f"stdout: {exc.stdout}\nstderr: {exc.stderr}"
+            ) from exc
 
         if result.returncode != 0:
+            logger.error("FFmpeg stderr: %s", result.stderr)
+            logger.error("FFmpeg stdout: %s", result.stdout)
             raise ShortsFormattingError(
                 f"FFmpeg failed for {clip_path!r} (exit {result.returncode}):\n"
                 f"{result.stderr}"
