@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -220,6 +221,13 @@ class ShortsFormatter:
         # Chain: canvas → facecam overlay → subtitle burn
         # The facecam filter takes [0:v] (for cropping the facecam) and [canvas] (for overlay)
         # The subtitle filter takes [with_facecam] and produces [final]
+        # 
+        # We need to chain these properly:
+        # 1. Canvas filter: [0:v] → [canvas]
+        # 2. Facecam filter: [0:v] + [canvas] → [with_facecam]
+        # 3. Subtitle filter: [with_facecam] → [final]
+        #
+        # Using semicolons to separate independent filter chains
         filter_complex = (
             canvas_frag.filter_str
             + ";"
@@ -227,10 +235,15 @@ class ShortsFormatter:
             + ";"
             + subtitle_frag.filter_str
         )
+        
+        logger.info("Canvas filter: %s", canvas_frag.filter_str)
+        logger.info("Facecam filter: %s", facecam_filter_str)
+        logger.info("Subtitle filter: %s", subtitle_frag.filter_str)
 
         # --- Step 7: Run FFmpeg ---
         cmd = [
             "ffmpeg",
+            "-nostdin",              # Disable interactive input
             "-y",                    # overwrite output without prompting
             "-i", clip_path,
             "-filter_complex", filter_complex,
@@ -246,27 +259,45 @@ class ShortsFormatter:
         logger.info("Running FFmpeg for shorts clip: %s", shorts_path)
         logger.debug("FFmpeg command: %s", cmd)
         logger.debug("Filter complex: %s", filter_complex)
+        
+        # Verify ASS file exists if using subtitle filter
+        if "ass=" in filter_complex or "subtitles=" in filter_complex:
+            # Extract the ASS file path from the filter string
+            ass_match = re.search(r'(?:ass|subtitles)=([^\]]+)', filter_complex)
+            if ass_match:
+                ass_path = ass_match.group(1).replace("\\:", ":")
+                if not os.path.exists(ass_path):
+                    logger.warning("ASS file not found: %s", ass_path)
+                else:
+                    logger.info("ASS file exists: %s", ass_path)
 
         try:
-            result = subprocess.run(
+            # Use Popen with proper pipe handling to avoid deadlocks
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True,
-                text=True,
                 stdin=subprocess.DEVNULL,
-                timeout=600,  # 10 minute timeout per clip
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
-        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = process.communicate(timeout=600)
+            result_returncode = process.returncode
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
             raise ShortsFormattingError(
-                f"FFmpeg timeout for {clip_path!r} (exceeded 600s):\n"
-                f"stdout: {exc.stdout}\nstderr: {exc.stderr}"
-            ) from exc
-
-        if result.returncode != 0:
-            logger.error("FFmpeg stderr: %s", result.stderr)
-            logger.error("FFmpeg stdout: %s", result.stdout)
+                f"FFmpeg timeout for {clip_path!r} (exceeded 600s)"
+            )
+        
+        if result_returncode != 0:
+            logger.error("FFmpeg stderr: %s", stderr)
+            logger.error("FFmpeg stdout: %s", stdout)
             raise ShortsFormattingError(
-                f"FFmpeg failed for {clip_path!r} (exit {result.returncode}):\n"
-                f"{result.stderr}"
+                f"FFmpeg failed for {clip_path!r} (exit {result_returncode}):\n"
+                f"{stderr}"
             )
 
         logger.info("Shorts clip written: %s", shorts_path)
