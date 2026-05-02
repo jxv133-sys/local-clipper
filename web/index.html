@@ -679,6 +679,26 @@
             </div>
           </div>
 
+          <div class="full">
+            <div class="toggle-row">
+              <input type="checkbox" id="opt-shorts" />
+              <label for="opt-shorts" style="margin:0">Generate vertical Shorts (9:16)</label>
+            </div>
+            <div style="font-size:0.72rem;color:var(--dim);margin-top:3px">
+              Produces a <em>_shorts.mp4</em> alongside each clip — ready for YouTube Shorts, TikTok &amp; Reels
+            </div>
+          </div>
+
+          <div class="full" id="shorts-style-row" style="display:none">
+            <label for="opt-subtitle-style">Subtitle style</label>
+            <select id="opt-subtitle-style">
+              <option value="bubble" selected>Bubble — scale-pop on entry</option>
+              <option value="popup">Pop-up — fade + scale-in per word group</option>
+              <option value="highlight">Highlight — coloured background box</option>
+              <option value="karaoke">Karaoke — word-by-word colour change</option>
+            </select>
+          </div>
+
         </div>
       </div>
 
@@ -957,6 +977,13 @@ llmCheck.addEventListener('change', () => {
   }
 });
 
+// Shorts toggle — show/hide subtitle style selector
+const shortsCheck = document.getElementById('opt-shorts');
+const shortsStyleRow = document.getElementById('shorts-style-row');
+shortsCheck.addEventListener('change', () => {
+  shortsStyleRow.style.display = shortsCheck.checked ? '' : 'none';
+});
+
 refreshModelsBtn.addEventListener('click', fetchOllamaModels);
 
 toggleInputBtn.addEventListener('click', () => {
@@ -1049,6 +1076,8 @@ runBtn.addEventListener('click', async () => {
     fd.append('platform',      document.getElementById('opt-platform').value);
     fd.append('language',      document.getElementById('opt-language').value);
     fd.append('trim_silence',  document.getElementById('opt-trim-silence').checked ? 'true' : 'false');
+    fd.append('shorts_enabled', document.getElementById('opt-shorts').checked ? 'true' : 'false');
+    fd.append('subtitle_style', document.getElementById('opt-subtitle-style').value);
     fd.append('text_weight',       document.getElementById('adv-text-weight').value);
     fd.append('audio_weight',      document.getElementById('adv-audio-weight').value);
     fd.append('min_text_score',    document.getElementById('adv-min-text-score').value);
@@ -1103,6 +1132,8 @@ runBtn.addEventListener('click', async () => {
   fd.append('platform',      document.getElementById('opt-platform').value);
   fd.append('language',      document.getElementById('opt-language').value);
   fd.append('trim_silence',  document.getElementById('opt-trim-silence').checked ? 'true' : 'false');
+  fd.append('shorts_enabled', document.getElementById('opt-shorts').checked ? 'true' : 'false');
+  fd.append('subtitle_style', document.getElementById('opt-subtitle-style').value);
   // Advanced settings
   fd.append('text_weight',       document.getElementById('adv-text-weight').value);
   fd.append('audio_weight',      document.getElementById('adv-audio-weight').value);
@@ -1417,6 +1448,7 @@ function renderClips(clips, jobId) {
           <a href="${esc(c.download_url)}" download="${esc(c.name)}">
             <button class="btn-sm btn-download">⬇ Download</button>
           </a>
+          ${c.shorts_download_url ? `<a href="${esc(c.shorts_download_url)}" download="${esc(c.shorts_name || '')}"><button class="btn-sm" style="background:var(--accent);color:#fff">📱 Shorts</button></a>` : ''}
           <button class="btn-sm btn-preview" onclick="togglePreview(${i}, '${esc(c.download_url)}')">▶ Preview</button>
           <button class="btn-sm btn-why" onclick="toggleWhy(${i})">📄 Why chosen</button>
         </div>
