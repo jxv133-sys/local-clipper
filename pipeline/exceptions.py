@@ -46,3 +46,8 @@ class LLMScoringError(PipelineError):
     - LLM endpoint is unreachable
     Note: This is non-fatal; callers should catch it and fall back to score 0.0
     """
+
+
+class ShortsFormattingError(PipelineError):
+    """Raised when the FFmpeg shorts formatting command fails."""
+    pass

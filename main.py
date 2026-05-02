@@ -43,9 +43,10 @@ from config import Config
 from pipeline.audio_extractor import extract_audio
 from pipeline.clip_extractor import extract_clips
 from pipeline.clip_selector import select_clips
-from pipeline.exceptions import PipelineError
+from pipeline.exceptions import PipelineError, ShortsFormattingError
 from pipeline.report_generator import generate_report
 from pipeline.scorer import score_segments
+from pipeline.shorts_formatter import ShortsFormatter
 from pipeline.subtitle_generator import generate_subtitles
 from pipeline.transcriber import transcribe
 
@@ -200,6 +201,7 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     cfg.use_cache = not args.no_cache
     cfg.language = args.language
     cfg.trim_silence = not args.no_trim_silence
+    cfg.shorts_enabled = args.shorts
     cfg.clip_tail_padding = args.clip_tail_padding
 
     # When LLM is enabled, give it real weight and reduce text/audio proportionally
@@ -272,7 +274,23 @@ def run_pipeline(video_path: str, config: Config) -> list[str]:
         report_paths.append(report_path)
     print(f"[ReportGenerator] Done — {len(report_paths)} report(s) written", flush=True)
 
-    return final_paths, clips
+    # Stage 8: Shorts formatting (opt-in)
+    shorts_paths: list[str] = []
+    if config.shorts_enabled:
+        shorts_formatter = ShortsFormatter()
+        try:
+            shorts_paths = _run_stage(
+                "ShortsFormatter",
+                shorts_formatter.format_clips,
+                config,
+                clips,
+                final_paths,
+                transcript,
+            )
+        except ShortsFormattingError as exc:
+            print(f"[ShortsFormatter] Warning: {exc}", flush=True)
+
+    return final_paths, clips, shorts_paths
 
 
 def main() -> None:
@@ -313,6 +331,8 @@ def main() -> None:
                         help="Force re-transcription, ignoring any cached transcript")
     parser.add_argument("--no-trim-silence", action="store_true",
                         help="Skip trimming leading/trailing silence from extracted clips")
+    parser.add_argument("--shorts", action="store_true",
+                        help="Enable vertical shorts formatting (9:16 canvas, facecam detection, animated subtitles)")
     parser.add_argument("--clip-tail-padding", type=float, default=1.5,
                         help="Seconds of video to keep after the last word in a clip (default: 1.5)")
     parser.add_argument("--language", default="auto",
@@ -363,7 +383,7 @@ def main() -> None:
     print()
 
     try:
-        final_paths, clips = run_pipeline(args.input_video, config)
+        final_paths, clips, shorts_paths = run_pipeline(args.input_video, config)
     except PipelineError as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         print(f"Temporary files kept for debugging: {work_dir}", file=sys.stderr)
@@ -386,6 +406,11 @@ def main() -> None:
         report = base + "_why_chosen.txt"
         if os.path.exists(report):
             print(f"    └─ {report}")
+
+    if shorts_paths:
+        print("\n✓ Shorts clips:")
+        for path in shorts_paths:
+            print(f"  {os.path.basename(path)}")
 
 
 if __name__ == "__main__":

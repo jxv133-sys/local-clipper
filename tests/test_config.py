@@ -155,3 +155,159 @@ class TestDefaultConfigIsValid:
         """The default Config (with only work_dir) should always be valid."""
         cfg = Config(work_dir=str(tmp_path))
         assert cfg is not None
+
+
+# ---------------------------------------------------------------------------
+# ShortsConfig fields — defaults and overrides
+# ---------------------------------------------------------------------------
+
+class TestShortsConfigDefaults:
+    """Verify that every ShortsConfig field has the expected default value."""
+
+    def setup_method(self):
+        self.cfg = _base_config()
+
+    def test_shorts_enabled_default(self):
+        assert self.cfg.shorts_enabled is False
+
+    def test_shorts_width_default(self):
+        assert self.cfg.shorts_width == 1080
+
+    def test_shorts_height_default(self):
+        assert self.cfg.shorts_height == 1920
+
+    def test_facecam_top_fraction_default(self):
+        assert self.cfg.facecam_top_fraction == pytest.approx(0.35)
+
+    def test_facecam_detection_enabled_default(self):
+        assert self.cfg.facecam_detection_enabled is True
+
+    def test_facecam_sample_duration_default(self):
+        assert self.cfg.facecam_sample_duration == pytest.approx(10.0)
+
+    def test_facecam_min_area_fraction_default(self):
+        assert self.cfg.facecam_min_area_fraction == pytest.approx(0.04)
+
+    def test_facecam_max_area_fraction_default(self):
+        assert self.cfg.facecam_max_area_fraction == pytest.approx(0.30)
+
+    def test_subtitle_style_default(self):
+        assert self.cfg.subtitle_style == "bubble"
+
+    def test_subtitle_font_size_default(self):
+        assert self.cfg.subtitle_font_size == 72
+
+    def test_subtitle_font_name_default(self):
+        assert self.cfg.subtitle_font_name == "Impact"
+
+    def test_subtitle_primary_color_default(self):
+        assert self.cfg.subtitle_primary_color == "&H00FFFFFF"
+
+    def test_subtitle_outline_color_default(self):
+        assert self.cfg.subtitle_outline_color == "&H00000000"
+
+    def test_subtitle_highlight_color_default(self):
+        assert self.cfg.subtitle_highlight_color == "&H0000FFFF"
+
+    def test_subtitle_outline_width_default(self):
+        assert self.cfg.subtitle_outline_width == pytest.approx(4.0)
+
+    def test_subtitle_shadow_depth_default(self):
+        assert self.cfg.subtitle_shadow_depth == pytest.approx(2.0)
+
+    def test_subtitle_margin_bottom_default(self):
+        assert self.cfg.subtitle_margin_bottom == 80
+
+    def test_subtitle_words_per_group_default(self):
+        assert self.cfg.subtitle_words_per_group == 3
+
+
+class TestShortsConfigOverrides:
+    """Verify that ShortsConfig fields can be overridden at construction time."""
+
+    def test_shorts_enabled_override(self):
+        cfg = _base_config(shorts_enabled=True)
+        assert cfg.shorts_enabled is True
+
+    def test_shorts_width_override(self):
+        cfg = _base_config(shorts_width=720)
+        assert cfg.shorts_width == 720
+
+    def test_shorts_height_override(self):
+        cfg = _base_config(shorts_height=1280)
+        assert cfg.shorts_height == 1280
+
+    def test_facecam_top_fraction_override(self):
+        cfg = _base_config(facecam_top_fraction=0.5)
+        assert cfg.facecam_top_fraction == pytest.approx(0.5)
+
+    def test_facecam_detection_enabled_override(self):
+        cfg = _base_config(facecam_detection_enabled=False)
+        assert cfg.facecam_detection_enabled is False
+
+    def test_facecam_sample_duration_override(self):
+        cfg = _base_config(facecam_sample_duration=5.0)
+        assert cfg.facecam_sample_duration == pytest.approx(5.0)
+
+    def test_facecam_min_area_fraction_override(self):
+        cfg = _base_config(facecam_min_area_fraction=0.10)
+        assert cfg.facecam_min_area_fraction == pytest.approx(0.10)
+
+    def test_facecam_max_area_fraction_override(self):
+        cfg = _base_config(facecam_max_area_fraction=0.50)
+        assert cfg.facecam_max_area_fraction == pytest.approx(0.50)
+
+    def test_subtitle_style_override(self):
+        cfg = _base_config(subtitle_style="karaoke")
+        assert cfg.subtitle_style == "karaoke"
+
+    def test_subtitle_font_size_override(self):
+        cfg = _base_config(subtitle_font_size=48)
+        assert cfg.subtitle_font_size == 48
+
+    def test_subtitle_font_name_override(self):
+        cfg = _base_config(subtitle_font_name="Arial")
+        assert cfg.subtitle_font_name == "Arial"
+
+    def test_subtitle_primary_color_override(self):
+        cfg = _base_config(subtitle_primary_color="&H000000FF")
+        assert cfg.subtitle_primary_color == "&H000000FF"
+
+    def test_subtitle_outline_color_override(self):
+        cfg = _base_config(subtitle_outline_color="&H00FFFFFF")
+        assert cfg.subtitle_outline_color == "&H00FFFFFF"
+
+    def test_subtitle_highlight_color_override(self):
+        cfg = _base_config(subtitle_highlight_color="&H0000FF00")
+        assert cfg.subtitle_highlight_color == "&H0000FF00"
+
+    def test_subtitle_outline_width_override(self):
+        cfg = _base_config(subtitle_outline_width=2.0)
+        assert cfg.subtitle_outline_width == pytest.approx(2.0)
+
+    def test_subtitle_shadow_depth_override(self):
+        cfg = _base_config(subtitle_shadow_depth=0.0)
+        assert cfg.subtitle_shadow_depth == pytest.approx(0.0)
+
+    def test_subtitle_margin_bottom_override(self):
+        cfg = _base_config(subtitle_margin_bottom=120)
+        assert cfg.subtitle_margin_bottom == 120
+
+    def test_subtitle_words_per_group_override(self):
+        cfg = _base_config(subtitle_words_per_group=5)
+        assert cfg.subtitle_words_per_group == 5
+
+    def test_multiple_shorts_fields_override_together(self):
+        """Multiple shorts fields can be overridden simultaneously."""
+        cfg = _base_config(
+            shorts_enabled=True,
+            shorts_width=720,
+            shorts_height=1280,
+            subtitle_style="popup",
+            subtitle_font_size=60,
+        )
+        assert cfg.shorts_enabled is True
+        assert cfg.shorts_width == 720
+        assert cfg.shorts_height == 1280
+        assert cfg.subtitle_style == "popup"
+        assert cfg.subtitle_font_size == 60

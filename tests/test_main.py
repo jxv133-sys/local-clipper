@@ -134,7 +134,7 @@ class TestRunPipelineStageOrdering:
             "extract_clips",
             "generate_subtitles",
         ]
-        assert result == (final_paths, clips)
+        assert result == (final_paths, clips, [])
 
     def test_wav_path_passed_to_transcribe(self, tmp_path):
         """The WAV path returned by extract_audio is passed to transcribe."""

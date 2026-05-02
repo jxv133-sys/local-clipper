@@ -215,6 +215,42 @@ class Config:
         "none":    {"min": 10.0, "max": 100.0},
     })
 
+    # ---------------------------------------------------------------------------
+    # Shorts / Vertical Formatter (Stage 8) — ShortsConfig fields
+    # ---------------------------------------------------------------------------
+
+    # Master switch — set via --shorts CLI flag
+    shorts_enabled: bool = False
+
+    # Canvas dimensions for the 9:16 vertical output
+    shorts_width: int = 1080
+    shorts_height: int = 1920
+
+    # Layout split: fraction of canvas height reserved for the facecam (top region)
+    facecam_top_fraction: float = 0.35
+
+    # Facecam detection settings
+    facecam_detection_enabled: bool = True
+    # Seconds of clip to sample for cropdetect
+    facecam_sample_duration: float = 10.0
+    # Minimum fraction of frame area a pip must occupy to be considered a facecam
+    facecam_min_area_fraction: float = 0.04
+    # Maximum fraction of frame area (to exclude full-frame faces / gameplay region)
+    facecam_max_area_fraction: float = 0.30
+
+    # Animated subtitle settings
+    # Style: "bubble" | "popup" | "highlight" | "karaoke"
+    subtitle_style: str = "bubble"
+    subtitle_font_size: int = 72
+    subtitle_font_name: str = "Impact"
+    subtitle_primary_color: str = "&H00FFFFFF"    # ASS color: white
+    subtitle_outline_color: str = "&H00000000"    # ASS color: black outline
+    subtitle_highlight_color: str = "&H0000FFFF"  # ASS color: yellow highlight
+    subtitle_outline_width: float = 4.0
+    subtitle_shadow_depth: float = 2.0
+    subtitle_margin_bottom: int = 80              # px from bottom of gameplay region
+    subtitle_words_per_group: int = 3
+
     def __post_init__(self) -> None:
         """Validate config fields after construction."""
         _TOL = 1e-9

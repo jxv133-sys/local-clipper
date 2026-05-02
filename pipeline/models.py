@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 
@@ -96,6 +97,49 @@ class SRTEntry:
     start: float   # seconds, relative to clip start
     end: float     # seconds, relative to clip start
     text: str
+
+
+@dataclass
+class FacecamRegion:
+    """Describes the detected facecam pip region in the source frame."""
+    x: int          # left edge in source frame pixels
+    y: int          # top edge in source frame pixels
+    width: int      # crop width
+    height: int     # crop height
+    corner: str     # "top-left" | "top-right" | "bottom-left" | "bottom-right"
+    confidence: float  # 0.0–1.0, how confident the detection is
+
+
+@dataclass
+class CanvasLayout:
+    """Describes the 9:16 vertical canvas layout with facecam and gameplay regions."""
+    canvas_width: int       # 1080
+    canvas_height: int      # 1920
+    facecam_x: int          # 0
+    facecam_y: int          # 0
+    facecam_width: int      # 1080
+    facecam_height: int     # ~672 (35% of 1920)
+    gameplay_x: int         # 0
+    gameplay_y: int         # ~672
+    gameplay_width: int     # 1080
+    gameplay_height: int    # ~1248 (65% of 1920)
+
+
+@dataclass
+class FilterFragment:
+    """An FFmpeg filter-graph fragment produced by a sub-component."""
+    filter_str: str         # FFmpeg -vf / -filter_complex fragment
+    input_label: str        # e.g. "[v0]"
+    output_label: str       # e.g. "[canvas]"
+    extra_inputs: list[str] = field(default_factory=list)  # additional -i paths needed
+
+
+class SubtitleStyle(Enum):
+    """Visual style for animated subtitles in the shorts formatter."""
+    BUBBLE    = "bubble"    # rounded outline, bold, slight scale pop on entry
+    POPUP     = "popup"     # words appear one at a time with a scale-in animation
+    HIGHLIGHT = "highlight" # active word gets a colored background box
+    KARAOKE   = "karaoke"   # word color changes as it is spoken
 
 
 @dataclass
