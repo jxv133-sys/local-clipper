@@ -199,6 +199,11 @@ class ShortsFormatter:
             facecam_filter_str = facecam_filter_str.replace(
                 "[with_blur_fill]", "[with_facecam]"
             )
+        
+        # CRITICAL FIX: The facecam filter needs to use [canvas] as input for the crop,
+        # not [0:v], because [0:v] is already consumed by the canvas filter.
+        # Replace the first occurrence of [0:v] with [canvas] in the facecam filter.
+        facecam_filter_str = facecam_filter_str.replace("[0:v]", "[canvas]", 1)
 
         # --- Step 5: Build subtitle filter fragment ---
         subtitle_style_str = getattr(config, "subtitle_style", "bubble")
@@ -263,6 +268,15 @@ class ShortsFormatter:
         logger.info("Running FFmpeg for shorts clip: %s", shorts_path)
         logger.debug("FFmpeg command: %s", cmd)
         logger.debug("Filter complex: %s", filter_complex)
+        logger.info("FFmpeg command line: %s", " ".join(cmd))
+        
+        # Validate filter_complex syntax by checking for common issues
+        if filter_complex.count("[") != filter_complex.count("]"):
+            raise ShortsFormattingError(
+                f"Invalid filter_complex: mismatched brackets\n{filter_complex}"
+            )
+        
+        logger.info("Filter complex validation passed")
         
         # Verify ASS file exists if using subtitle filter
         if "ass=" in filter_complex or "subtitles=" in filter_complex:
@@ -279,6 +293,7 @@ class ShortsFormatter:
 
         try:
             # Use Popen with proper pipe handling to avoid deadlocks
+            logger.info("Starting FFmpeg subprocess...")
             process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -286,13 +301,19 @@ class ShortsFormatter:
                 stderr=subprocess.PIPE,
                 text=True,
             )
+            logger.info("FFmpeg process started (PID: %s), waiting for completion...", process.pid)
+            
             stdout, stderr = process.communicate(timeout=600)
             result_returncode = process.returncode
+            
+            logger.info("FFmpeg process completed with return code: %s", result_returncode)
         except subprocess.TimeoutExpired:
+            logger.error("FFmpeg timeout - killing process")
             process.kill()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                logger.error("Process did not terminate after kill signal")
                 process.kill()
             raise ShortsFormattingError(
                 f"FFmpeg timeout for {clip_path!r} (exceeded 600s)"
