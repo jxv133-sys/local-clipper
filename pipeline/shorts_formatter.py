@@ -144,6 +144,10 @@ class ShortsFormatter:
             ShortsFormattingError: If FFmpeg exits with a non-zero return code.
         """
         shorts_path = derive_shorts_path(clip_path)
+        
+        # Ensure output directory exists
+        output_dir = os.path.dirname(shorts_path)
+        os.makedirs(output_dir, exist_ok=True)
 
         # --- Step 1: Probe source video dimensions ---
         src_width, src_height = _probe_video_dimensions(clip_path)
@@ -264,7 +268,8 @@ class ShortsFormatter:
         if "ass=" in filter_complex or "subtitles=" in filter_complex:
             # Extract the ASS file path from the filter string
             # Pattern: ass=/path/to/file.ass[label] → capture /path/to/file.ass
-            ass_match = re.search(r'(?:ass|subtitles)=([^\[\]]+)', filter_complex)
+            # Match everything between = and the first [
+            ass_match = re.search(r'(?:ass|subtitles)=([^[]+)', filter_complex)
             if ass_match:
                 ass_path = ass_match.group(1).replace("\\:", ":")
                 if not os.path.exists(ass_path):
@@ -301,7 +306,14 @@ class ShortsFormatter:
                 f"{stderr}"
             )
 
-        logger.info("Shorts clip written: %s", shorts_path)
+        # Verify output file was created
+        if not os.path.exists(shorts_path):
+            raise ShortsFormattingError(
+                f"FFmpeg completed but output file not created: {shorts_path}"
+            )
+        
+        output_size = os.path.getsize(shorts_path)
+        logger.info("Shorts clip written: %s (size: %d bytes)", shorts_path, output_size)
         return shorts_path
 
     def format_clips(
