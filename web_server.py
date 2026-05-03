@@ -53,10 +53,9 @@ from main import download_youtube_video
 from pipeline.audio_extractor import extract_audio
 from pipeline.clip_extractor import extract_clips, generate_thumbnail
 from pipeline.clip_selector import select_clips
-from pipeline.exceptions import PipelineError, ShortsFormattingError
+from pipeline.exceptions import PipelineError
 from pipeline.report_generator import generate_report
 from pipeline.scorer import score_segments
-from pipeline.shorts_formatter import ShortsFormatter, collect_srt_entries
 from pipeline.subtitle_generator import generate_subtitles
 from pipeline.transcriber import transcribe
 
@@ -239,8 +238,8 @@ def _run_pipeline_for_job(job: Job) -> None:
     pipeline_logger.setLevel(logging.INFO)
     pipeline_logger.addHandler(handler)
 
-    # Determine total stages (8 if shorts enabled, else 7)
-    total_stages = 8 if job.config.shorts_enabled else 7
+    # Determine total stages (7 stages, no shorts)
+    total_stages = 7
 
     try:
         # Stage 1: Audio extraction (0% → 5%)
@@ -349,33 +348,7 @@ def _run_pipeline_for_job(job: Job) -> None:
                 "thumbnail_name": thumbnail_name,
             })
         log(f"[ReportGenerator] Done in {time.time() - t0:.1f}s — {len(result_clips)} report(s)")
-        job.add_progress(7, total_stages, "Generating Reports", 98 if job.config.shorts_enabled else 100)
-
-        # Stage 8: Shorts formatting (opt-in, 98% → 100%)
-        if job.config.shorts_enabled:
-            job.add_progress(8, total_stages, "Shorts Formatting", 98)
-            log("[ShortsFormatter] Starting...")
-            t0 = time.time()
-            shorts_formatter = ShortsFormatter()
-            try:
-                shorts_paths = shorts_formatter.format_clips(
-                    job.config, clips, final_paths, transcript
-                )
-                log(f"[ShortsFormatter] Done in {time.time() - t0:.1f}s — {len(shorts_paths)} shorts clip(s)")
-                # Attach shorts paths to result_clips by matching original clip path
-                shorts_by_original = {}
-                for orig, shorts in zip(final_paths, shorts_paths):
-                    shorts_by_original[orig] = shorts
-                for rc in result_clips:
-                    sp = shorts_by_original.get(rc["path"])
-                    if sp and os.path.exists(sp):
-                        rc["shorts_path"] = sp
-                        rc["shorts_name"] = os.path.basename(sp)
-            except ShortsFormattingError as exc:
-                log(f"[ShortsFormatter] Warning: {exc}")
-            except Exception as exc:
-                log(f"[ShortsFormatter] Warning: unexpected error: {exc}")
-            job.add_progress(8, total_stages, "Shorts Formatting", 100)
+        job.add_progress(7, total_stages, "Generating Reports", 100)
 
         # Clean up temp dir
         shutil.rmtree(job.config.work_dir, ignore_errors=True)
@@ -508,8 +481,6 @@ def create_job():
     genre = request.form.get("genre", "auto").strip() or "auto"
     platform = request.form.get("platform", "none").strip() or "none"
     language = request.form.get("language", "auto").strip() or "auto"
-    shorts_enabled = request.form.get("shorts_enabled", "false").lower() == "true"
-    subtitle_style = request.form.get("subtitle_style", "bubble").strip() or "bubble"
 
     # Advanced settings (with safe float parsing)
     def _float(key: str, default: float) -> float:
@@ -555,8 +526,6 @@ def create_job():
     cfg.genre = genre
     cfg.platform = platform
     cfg.language = language
-    cfg.shorts_enabled = shorts_enabled
-    cfg.subtitle_style = subtitle_style
 
     # Apply advanced settings
     cfg.text_weight = adv_text_weight
@@ -603,8 +572,6 @@ def create_job():
         "genre": genre,
         "platform": platform,
         "language": language,
-        "shorts_enabled": shorts_enabled,
-        "subtitle_style": subtitle_style,
         "original_video_path": str(upload_path),
         "youtube_url": youtube_url,
     }
@@ -682,29 +649,6 @@ def download_clip(job_id: str, clip_index: int):
         clip_path,
         as_attachment=True,
         download_name=os.path.basename(clip_path),
-        mimetype="video/mp4",
-    )
-
-
-@app.route("/api/jobs/<job_id>/clips/<int:clip_index>/download-shorts")
-def download_shorts_clip(job_id: str, clip_index: int):
-    """Download the shorts version of a specific clip from a completed job."""
-    job = _get_job(job_id)
-    if job is None:
-        return jsonify({"error": "Job not found"}), 404
-    if job.status != JobStatus.DONE:
-        return jsonify({"error": "Job not complete"}), 400
-    if clip_index < 0 or clip_index >= len(job.result_clips):
-        return jsonify({"error": "Clip index out of range"}), 404
-
-    shorts_path = job.result_clips[clip_index].get("shorts_path")
-    if not shorts_path or not os.path.exists(shorts_path):
-        return jsonify({"error": "Shorts clip not found"}), 404
-
-    return send_file(
-        shorts_path,
-        as_attachment=True,
-        download_name=os.path.basename(shorts_path),
         mimetype="video/mp4",
     )
 
@@ -824,13 +768,10 @@ def _job_detail(job: Job) -> dict:
     clips = []
     for i, c in enumerate(job.result_clips):
         thumbnail_name = c.get("thumbnail_name")
-        shorts_name = c.get("shorts_name")
         clips.append({
             "index": i,
             "name": c["name"],
             "download_url": f"/api/jobs/{job.job_id}/clips/{i}/download",
-            "shorts_download_url": f"/api/jobs/{job.job_id}/clips/{i}/download-shorts" if shorts_name else None,
-            "shorts_name": shorts_name,
             "why_chosen": c.get("why_chosen", ""),
             "timestamp_range": c.get("timestamp_range", ""),
             "duration": c.get("duration", ""),
