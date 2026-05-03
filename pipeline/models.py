@@ -156,3 +156,206 @@ class AudioFeatures:
     pitch_score: float       # F0 fundamental frequency (normalized 0-1)
     excitement_score: float  # 0.6 × volume + 0.4 × pitch
     silence_score: float     # 1.0 - volume (detects pauses)
+
+
+import time
+import uuid
+from typing import Optional
+
+
+@dataclass
+class EditorSession:
+    """Tracks user state during a mini video editor session.
+    
+    Maintains undo/redo history for facecam region adjustments and stores
+    user preferences and settings. Sessions expire after 30 minutes of inactivity.
+    """
+    session_id: str                    # UUID, unique session identifier
+    clip_batch_id: str                 # Reference to the batch being edited
+    reference_clip_path: str           # Path to the first/reference clip
+    reference_resolution: tuple[int, int]  # (width, height) of reference clip
+    facecam_region: FacecamRegion      # Current facecam placement
+    canvas_layout: CanvasLayout        # Computed 9:16 canvas layout
+    undo_history: list[FacecamRegion] = field(default_factory=list)  # For undo
+    redo_history: list[FacecamRegion] = field(default_factory=list)  # For redo
+    settings: dict[str, Any] = field(default_factory=dict)  # User preferences
+    created_at: float = field(default_factory=time.time)  # Session creation timestamp
+    expires_at: float = field(default_factory=lambda: time.time() + 1800)  # 30 minutes
+    
+    def is_expired(self) -> bool:
+        """Check if the session has expired."""
+        return time.time() > self.expires_at
+    
+    def refresh_expiry(self, timeout_seconds: int = 1800) -> None:
+        """Refresh the session expiry time (default 30 minutes)."""
+        self.expires_at = time.time() + timeout_seconds
+    
+    def push_undo(self, region: FacecamRegion) -> None:
+        """Push a facecam region to the undo history."""
+        self.undo_history.append(region)
+        # Clear redo history when a new adjustment is made
+        self.redo_history.clear()
+    
+    def pop_undo(self) -> Optional[FacecamRegion]:
+        """Pop a facecam region from the undo history."""
+        if self.undo_history:
+            return self.undo_history.pop()
+        return None
+    
+    def push_redo(self, region: FacecamRegion) -> None:
+        """Push a facecam region to the redo history."""
+        self.redo_history.append(region)
+    
+    def pop_redo(self) -> Optional[FacecamRegion]:
+        """Pop a facecam region from the redo history."""
+        if self.redo_history:
+            return self.redo_history.pop()
+        return None
+    
+    def clear_history(self) -> None:
+        """Clear both undo and redo history."""
+        self.undo_history.clear()
+        self.redo_history.clear()
+
+
+@dataclass
+class VerticalFormattingJob:
+    """Represents a batch processing job for vertical formatting.
+    
+    Tracks progress, errors, and status of formatting multiple clips
+    to vertical (9:16) format with a consistent facecam placement.
+    """
+    job_id: str                        # UUID, unique job identifier
+    session_id: str                    # Reference to the editor session
+    clip_batch_id: str                 # Batch being processed
+    facecam_region: FacecamRegion      # Confirmed facecam placement
+    canvas_layout: CanvasLayout        # Layout to apply to all clips
+    settings: dict[str, Any]           # User settings (backup, naming, etc.)
+    clips: list[dict[str, Any]]        # List of clips: [{path, name, resolution}]
+    status: str                        # "queued" | "running" | "done" | "failed" | "cancelled"
+    clips_processed: int = 0           # Number of clips successfully processed
+    clips_total: int = field(default_factory=lambda: 0)  # Total clips to process
+    current_clip: str = ""             # Name of clip currently being processed
+    errors: list[str] = field(default_factory=list)  # Error messages
+    output_dir: str = ""               # Directory where output files are saved
+    created_at: float = field(default_factory=time.time)  # Job creation timestamp
+    started_at: float = 0.0            # When processing began
+    completed_at: float = 0.0          # When processing finished
+    
+    def __post_init__(self) -> None:
+        """Initialize clips_total if not set."""
+        if self.clips_total == 0:
+            self.clips_total = len(self.clips)
+    
+    def start_processing(self) -> None:
+        """Mark the job as started."""
+        self.status = "running"
+        self.started_at = time.time()
+    
+    def complete_processing(self) -> None:
+        """Mark the job as completed."""
+        self.status = "done"
+        self.completed_at = time.time()
+    
+    def fail_processing(self) -> None:
+        """Mark the job as failed."""
+        self.status = "failed"
+        self.completed_at = time.time()
+    
+    def cancel_processing(self) -> None:
+        """Mark the job as cancelled."""
+        self.status = "cancelled"
+        self.completed_at = time.time()
+    
+    def increment_progress(self, current_clip: str = "") -> None:
+        """Increment the clips_processed counter."""
+        self.clips_processed += 1
+        if current_clip:
+            self.current_clip = current_clip
+    
+    def add_error(self, error_message: str) -> None:
+        """Add an error message to the errors list."""
+        self.errors.append(error_message)
+    
+    def get_progress_percentage(self) -> float:
+        """Get the progress as a percentage (0.0-100.0)."""
+        if self.clips_total == 0:
+            return 0.0
+        return (self.clips_processed / self.clips_total) * 100.0
+    
+    def get_elapsed_time(self) -> float:
+        """Get elapsed time in seconds."""
+        if self.started_at == 0:
+            return 0.0
+        end_time = self.completed_at if self.completed_at > 0 else time.time()
+        return end_time - self.started_at
+    
+    def estimate_remaining_time(self) -> float:
+        """Estimate remaining time in seconds based on current progress."""
+        if self.clips_processed == 0 or self.started_at == 0:
+            return 0.0
+        elapsed = time.time() - self.started_at
+        avg_time_per_clip = elapsed / self.clips_processed
+        remaining_clips = self.clips_total - self.clips_processed
+        return avg_time_per_clip * remaining_clips
+
+
+class SessionStore:
+    """In-memory session store with expiry cleanup."""
+    
+    def __init__(self) -> None:
+        """Initialize the session store."""
+        self._sessions: dict[str, EditorSession] = {}
+    
+    def create_session(
+        self,
+        clip_batch_id: str,
+        reference_clip_path: str,
+        reference_resolution: tuple[int, int],
+        facecam_region: FacecamRegion,
+        canvas_layout: CanvasLayout,
+        settings: Optional[dict[str, Any]] = None,
+    ) -> EditorSession:
+        """Create a new editor session."""
+        session_id = str(uuid.uuid4())
+        session = EditorSession(
+            session_id=session_id,
+            clip_batch_id=clip_batch_id,
+            reference_clip_path=reference_clip_path,
+            reference_resolution=reference_resolution,
+            facecam_region=facecam_region,
+            canvas_layout=canvas_layout,
+            settings=settings or {},
+        )
+        self._sessions[session_id] = session
+        return session
+    
+    def get_session(self, session_id: str) -> Optional[EditorSession]:
+        """Retrieve a session by ID, returning None if expired."""
+        session = self._sessions.get(session_id)
+        if session and session.is_expired():
+            del self._sessions[session_id]
+            return None
+        return session
+    
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session by ID."""
+        if session_id in self._sessions:
+            del self._sessions[session_id]
+            return True
+        return False
+    
+    def cleanup_expired_sessions(self) -> int:
+        """Remove all expired sessions and return the count removed."""
+        expired_ids = [
+            sid for sid, session in self._sessions.items()
+            if session.is_expired()
+        ]
+        for sid in expired_ids:
+            del self._sessions[sid]
+        return len(expired_ids)
+    
+    def list_sessions(self) -> list[EditorSession]:
+        """List all active (non-expired) sessions."""
+        self.cleanup_expired_sessions()
+        return list(self._sessions.values())
