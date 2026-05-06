@@ -236,109 +236,109 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Add network error message with retry option
     - _Requirements: 3.7, 10.1, 10.2, 10.3_
 
-- [ ] 10. Implement CSS styling and responsive design
-  - [ ] 10.1 Create base styles and layout
+- [x] 10. Implement CSS styling and responsive design
+  - [x] 10.1 Create base styles and layout
     - Implement responsive grid layout for preview panes
     - Style adjustment controls (sliders, inputs)
     - Style action buttons with clear visual hierarchy
     - _Requirements: 2.6, 4.1, 4.2, 4.3, 4.4_
   
-  - [ ] 10.2 Implement preview pane styling
+  - [x] 10.2 Implement preview pane styling
     - Style horizontal preview pane (16:9 aspect ratio)
     - Style vertical preview pane (9:16 aspect ratio)
     - Add facecam region highlight/bounding box
     - _Requirements: 2.2, 2.3, 2.4, 2.5_
   
-  - [ ] 10.3 Implement responsive breakpoints
+  - [x] 10.3 Implement responsive breakpoints
     - Desktop layout (1024×768+): side-by-side preview panes
     - Tablet layout (768×1024): stacked preview panes
     - Mobile layout: single preview pane with toggle
     - _Requirements: 2.6, 13.4_
   
-  - [ ] 10.4 Implement accessibility styling
+  - [x] 10.4 Implement accessibility styling
     - Ensure 4.5:1 color contrast for text
     - Add clear focus indicators on interactive elements
     - Support font size adjustment
     - _Requirements: 17.2, 17.4, 17.5, 17.7_
 
-- [ ] 11. Implement JavaScript preview rendering
-  - [ ] 11.1 Create canvas rendering for horizontal preview
+- [x] 11. Implement JavaScript preview rendering
+  - [x] 11.1 Create canvas rendering for horizontal preview
     - Render source clip preview at original aspect ratio
     - Draw facecam region bounding box/highlight
     - Update on facecam_region changes
     - _Requirements: 2.2, 2.3, 4.6_
   
-  - [ ] 11.2 Create canvas rendering for vertical preview
+  - [x] 11.2 Create canvas rendering for vertical preview
     - Render 9:16 vertical canvas
     - Draw facecam region in top portion
     - Draw gameplay region in bottom portion
     - Apply black background fill
     - _Requirements: 2.4, 2.5, 5.1, 5.2, 5.3, 5.6_
   
-  - [ ] 11.3 Implement real-time preview updates
+  - [x] 11.3 Implement real-time preview updates
     - Debounce slider inputs (100ms)
     - Update preview within 500ms of adjustment
     - Fetch preview image from backend
     - _Requirements: 4.6, 5.4, 12.1_
   
-  - [ ] 11.4 Write property tests for preview rendering
+  - [x] 11.4 Write property tests for preview rendering
     - **Property 20: Update responsiveness** - For any adjustment to facecam region, preview should update within 500ms
     - **Validates: Requirements 4.6, 5.4, 12.1_
 
-- [ ] 12. Implement adjustment controls
-  - [ ] 12.1 Create slider controls for X, Y, width, height
+- [x] 12. Implement adjustment controls
+  - [x] 12.1 Create slider controls for X, Y, width, height
     - Implement range sliders with min/max bounds
     - Display current value next to each slider
     - Bind to facecam_region state
     - _Requirements: 4.2, 4.3, 4.4, 4.5_
   
-  - [ ] 12.2 Implement bounds validation
+  - [x] 12.2 Implement bounds validation
     - Prevent region from extending beyond frame bounds
     - Enforce minimum and maximum sizes
     - Display error message on invalid adjustment
     - _Requirements: 4.7, 4.8_
   
-  - [ ] 12.3 Implement visual feedback for invalid regions
+  - [x] 12.3 Implement visual feedback for invalid regions
     - Highlight invalid slider positions
     - Show error message below slider
     - Disable Confirm button if region is invalid
     - _Requirements: 4.8_
   
-  - [ ] 12.4 Implement keyboard support for adjustments
+  - [x] 12.4 Implement keyboard support for adjustments
     - Allow arrow keys to adjust values
     - Support Tab navigation between controls
     - _Requirements: 17.2_
 
-- [ ] 13. Implement undo/redo UI
-  - [ ] 13.1 Create undo/redo buttons
+- [x] 13. Implement undo/redo UI
+  - [x] 13.1 Create undo/redo buttons
     - Add Undo button that calls POST /api/mini-editor/undo
     - Add Redo button that calls POST /api/mini-editor/redo
     - Disable buttons when history is empty
     - _Requirements: 18.2, 18.3_
   
-  - [ ] 13.2 Implement keyboard shortcuts
+  - [x] 13.2 Implement keyboard shortcuts
     - Ctrl+Z for undo
     - Ctrl+Y for redo
     - _Requirements: 18.4_
   
-  - [ ] 13.3 Display undo/redo state
+  - [x] 13.3 Display undo/redo state
     - Show "Undo (3 steps)" or "Redo disabled" text
     - Update state display after each action
     - _Requirements: 18.6_
 
-- [ ] 14. Implement settings panel
-  - [ ] 14.1 Create settings panel UI
+- [x] 14. Implement settings panel
+  - [x] 14.1 Create settings panel UI
     - Add backup enable/disable checkbox
     - Add output naming convention radio buttons
     - Add replacement vs. separate directory options
     - _Requirements: 20.2, 20.3, 20.4, 20.5_
   
-  - [ ] 14.2 Implement settings persistence
+  - [x] 14.2 Implement settings persistence
     - Save settings to localStorage
     - Load settings on page load
     - _Requirements: 20.6_
   
-  - [ ] 14.3 Implement settings validation
+  - [x] 14.3 Implement settings validation
     - Validate output directory exists and is writable
     - Validate naming convention format
     - Display error message on invalid settings
@@ -348,7 +348,7 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
 
 ## Phase 4: Integration and Testing
 
-- [ ] 15. Integrate with existing web server
+- [x] 15. Integrate with existing web server
   - [x] 15.1 Register mini-editor routes
     - Add GET /mini-editor route to serve HTML
     - Register all API endpoints (/api/mini-editor/*)
@@ -365,7 +365,7 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Load facecam_sample_duration from Config object
     - _Requirements: 11.5, 15.6, 16.5_
 
-- [ ] 16. Integrate with existing pipeline components
+- [x] 16. Integrate with existing pipeline components
   - [x] 16.1 Integrate FacecamRelocator
     - Import FacecamRelocator from pipeline.facecam_relocator
     - Call detect_facecam() method in detection endpoint
@@ -384,7 +384,7 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Build complete filter chain for vertical output
     - _Requirements: 11.4, 16.3_
 
-- [ ] 17. Implement error handling and fallback options
+- [x] 17. Implement error handling and fallback options
   - [x] 17.1 Implement detection failure handling
     - Display error message with reason (area outside bounds, no clear pip detected)
     - Offer manual selection option
@@ -408,7 +408,7 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Implement exponential backoff for retries
     - _Requirements: 13.7_
 
-- [ ] 18. Implement format-to-vertical prompt
+- [x] 18. Implement format-to-vertical prompt
   - [x] 18.1 Create prompt UI component
     - Display after clip generation completes
     - Show "Format to Vertical" call-to-action button
@@ -425,7 +425,7 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Close prompt on dismiss
     - _Requirements: 1.4_
 
-- [ ] 19. Implement progress and status displays
+- [x] 19. Implement progress and status displays
   - [x] 19.1 Create progress indicator for detection
     - Show loading spinner while FacecamRelocator runs
     - Display "Detecting facecam..." message
@@ -442,33 +442,33 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Show list of failed clips with reasons
     - _Requirements: 19.7_
 
-- [ ] 20. Implement accessibility features
-  - [ ] 20.1 Add ARIA labels and descriptions
+- [x] 20. Implement accessibility features
+  - [x] 20.1 Add ARIA labels and descriptions
     - Add aria-label to all interactive elements
     - Add aria-describedby for error messages
     - Add aria-live for status updates
     - _Requirements: 17.1, 17.3, 17.6_
   
-  - [ ] 20.2 Implement keyboard navigation
+  - [x] 20.2 Implement keyboard navigation
     - Ensure all controls accessible via Tab
     - Implement Enter for button activation
     - Implement Arrow keys for slider adjustment
     - _Requirements: 17.2_
   
-  - [ ] 20.3 Implement screen reader announcements
+  - [x] 20.3 Implement screen reader announcements
     - Announce detection completion
     - Announce preview updates
     - Announce batch processing progress
     - Announce errors and validation messages
     - _Requirements: 17.6_
   
-  - [ ] 20.4 Implement color contrast and visual indicators
+  - [x] 20.4 Implement color contrast and visual indicators
     - Ensure 4.5:1 contrast for all text
     - Add clear focus indicators on all interactive elements
     - Use icons + text for all buttons
     - _Requirements: 17.4, 17.5_
   
-  - [ ] 20.5 Implement font sizing and spacing adjustment
+  - [x] 20.5 Implement font sizing and spacing adjustment
     - Allow users to increase font size
     - Allow users to increase spacing
     - Persist preferences across sessions
