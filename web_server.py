@@ -562,6 +562,8 @@ def create_job():
     output_dir = request.form.get("output_dir", "").strip() or str(OUTPUT_DIR)
     burn_subtitles = request.form.get("burn_subtitles", "true").lower() != "false"
     trim_silence = request.form.get("trim_silence", "true").lower() != "false"
+    shorts_enabled = request.form.get("shorts_enabled", "false").lower() == "true"
+    subtitle_style = request.form.get("subtitle_style", "bubble").strip() or "bubble"
     genre = request.form.get("genre", "auto").strip() or "auto"
     platform = request.form.get("platform", "none").strip() or "none"
     language = request.form.get("language", "auto").strip() or "auto"
@@ -607,6 +609,8 @@ def create_job():
     cfg.llm_model = llm_model
     cfg.burn_subtitles = burn_subtitles
     cfg.trim_silence = trim_silence
+    cfg.shorts_enabled = shorts_enabled
+    cfg.subtitle_style = subtitle_style
     cfg.genre = genre
     cfg.platform = platform
     cfg.language = language
@@ -653,6 +657,8 @@ def create_job():
         "output_dir": output_dir,
         "burn_subtitles": burn_subtitles,
         "trim_silence": trim_silence,
+        "shorts_enabled": shorts_enabled,
+        "subtitle_style": subtitle_style,
         "genre": genre,
         "platform": platform,
         "language": language,
