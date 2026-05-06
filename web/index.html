@@ -2039,7 +2039,7 @@ async function openVerticalEditor(jobId) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        job_id: jobId,
+        clip_batch_id: jobId,
         reference_clip_path: editorState.referenceClip,
       }),
     });
