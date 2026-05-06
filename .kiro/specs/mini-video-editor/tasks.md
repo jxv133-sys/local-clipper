@@ -215,7 +215,7 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Build responsive layout with horizontal and vertical preview panes
     - Add adjustment controls (sliders for X, Y, width, height)
     - Add action buttons (Confirm, Cancel, Undo, Redo, Settings)
-    - _Requirements: 2.2, 2.3, 2.4, 2.5, 2.6, 4.1, 4.2, 4.3, 4.4, 4.5_
+    - _Requirements: 2.2, 2.3, 2.4, 2.5,   2.6, 4.1, 4.2, 4.3, 4.4, 4.5_
   
   - [x] 9.2 Create settings panel HTML
     - Add backup enable/disable checkbox
@@ -442,7 +442,7 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
     - Show list of failed clips with reasons
     - _Requirements: 19.7_
 
-- [x] 20. Implement accessibility features
+- [ ] 20. Implement accessibility features
   - [x] 20.1 Add ARIA labels and descriptions
     - Add aria-label to all interactive elements
     - Add aria-describedby for error messages
