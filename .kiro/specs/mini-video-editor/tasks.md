@@ -210,27 +210,27 @@ This plan reuses existing pipeline components (FacecamRelocator, FrameReformatte
 
 ## Phase 3: Frontend UI Components
 
-- [ ] 9. Create HTML structure and layout
-  - [ ] 9.1 Create main editor HTML template
+- [x] 9. Create HTML structure and layout
+  - [x] 9.1 Create main editor HTML template
     - Build responsive layout with horizontal and vertical preview panes
     - Add adjustment controls (sliders for X, Y, width, height)
     - Add action buttons (Confirm, Cancel, Undo, Redo, Settings)
     - _Requirements: 2.2, 2.3, 2.4, 2.5, 2.6, 4.1, 4.2, 4.3, 4.4, 4.5_
   
-  - [ ] 9.2 Create settings panel HTML
+  - [x] 9.2 Create settings panel HTML
     - Add backup enable/disable checkbox
     - Add output naming convention options
     - Add replacement vs. separate directory options
     - _Requirements: 20.2, 20.3, 20.4, 20.5_
   
-  - [ ] 9.3 Create progress view HTML
+  - [x] 9.3 Create progress view HTML
     - Add progress bar showing clips processed
     - Add current clip name display
     - Add estimated time remaining
     - Add pause/cancel buttons
     - _Requirements: 12.6, 19.1, 19.2, 19.3, 19.4_
   
-  - [ ] 9.4 Create error message templates
+  - [x] 9.4 Create error message templates
     - Add detection failure message with suggestions
     - Add invalid region error message
     - Add network error message with retry option

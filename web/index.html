@@ -512,6 +512,209 @@
       .main { grid-template-columns: 1fr; }
       .left-panel { border-right: none; border-bottom: 1px solid var(--border); }
     }
+
+    /* ── Vertical Formatting Editor ──────────────────────────────── */
+    .vertical-editor-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 1000;
+      overflow-y: auto;
+      padding: 20px;
+    }
+    .vertical-editor-overlay.open { display: flex; align-items: center; justify-content: center; }
+
+    .vertical-editor {
+      background: var(--surface);
+      border-radius: var(--radius);
+      max-width: 1400px;
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    }
+
+    .editor-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .editor-header h2 { font-size: 1.1rem; color: var(--text); }
+    .editor-close-btn {
+      background: transparent;
+      border: none;
+      color: var(--dim);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .editor-close-btn:hover { background: var(--border); color: var(--text); }
+
+    .editor-body {
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .preview-section {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .preview-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent2);
+    }
+    .preview-container {
+      position: relative;
+      background: #000;
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .preview-horizontal {
+      aspect-ratio: 16 / 9;
+    }
+    .preview-vertical {
+      aspect-ratio: 9 / 16;
+      max-height: 600px;
+    }
+    .preview-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .preview-loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--dim);
+      font-size: 0.85rem;
+    }
+
+    .facecam-box {
+      position: absolute;
+      border: 2px solid var(--accent);
+      box-shadow: 0 0 0 2px rgba(124, 106, 247, 0.3);
+      pointer-events: none;
+    }
+
+    .confidence-badge {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(0,0,0,0.7);
+      color: var(--success);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    .controls-section {
+      grid-column: 1 / -1;
+      border-top: 1px solid var(--border);
+      padding-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .control-row {
+      display: grid;
+      grid-template-columns: 80px 1fr 60px;
+      align-items: center;
+      gap: 12px;
+    }
+    .control-label {
+      font-size: 0.8rem;
+      color: var(--dim);
+      font-weight: 600;
+    }
+    .control-slider {
+      accent-color: var(--accent);
+    }
+    .control-value {
+      font-size: 0.8rem;
+      color: var(--accent2);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .editor-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .editor-btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .editor-btn:hover:not(:disabled) { opacity: 0.85; }
+    .editor-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .editor-btn-primary { background: var(--accent); color: #fff; }
+    .editor-btn-secondary { background: var(--border); color: var(--text); }
+    .editor-btn-danger { background: var(--error); color: #fff; }
+
+    .editor-status {
+      padding: 12px;
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      margin-bottom: 16px;
+    }
+    .editor-status-info { background: rgba(90, 156, 248, 0.15); color: var(--accent2); }
+    .editor-status-success { background: rgba(166, 227, 161, 0.15); color: var(--success); }
+    .editor-status-error { background: rgba(243, 139, 168, 0.15); color: var(--error); }
+    .editor-status-warning { background: rgba(250, 179, 135, 0.15); color: var(--warning); }
+
+    .format-vertical-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      margin-bottom: 16px;
+      width: 100%;
+    }
+    .format-vertical-btn:hover { opacity: 0.88; }
+    .format-vertical-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    @media (max-width: 1200px) {
+      .editor-body { grid-template-columns: 1fr; }
+      .preview-vertical { max-height: 500px; }
+    }
   </style>
 </head>
 <body>
@@ -847,6 +1050,76 @@
   <div class="jobs-section">
     <div class="section-title" style="margin-bottom:8px">Job Queue</div>
     <div id="job-list"><div class="empty-state">No jobs yet.</div></div>
+  </div>
+
+  <!-- ── Vertical Formatting Editor Overlay ─────────────────────── -->
+  <div class="vertical-editor-overlay" id="vertical-editor-overlay">
+    <div class="vertical-editor">
+      <div class="editor-header">
+        <h2>📱 Format to Vertical (9:16)</h2>
+        <button class="editor-close-btn" onclick="closeVerticalEditor()" aria-label="Close editor">×</button>
+      </div>
+
+      <div class="editor-body">
+        <!-- Status messages -->
+        <div id="editor-status-container" style="grid-column: 1 / -1;"></div>
+
+        <!-- Horizontal preview -->
+        <div class="preview-section">
+          <div class="preview-label">Source Clip (16:9)</div>
+          <div class="preview-container preview-horizontal">
+            <canvas id="preview-horizontal-canvas" class="preview-canvas"></canvas>
+            <div id="preview-horizontal-loading" class="preview-loading">Loading...</div>
+            <div id="facecam-box-horizontal" class="facecam-box" style="display:none"></div>
+            <div id="confidence-badge" class="confidence-badge" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- Vertical preview -->
+        <div class="preview-section">
+          <div class="preview-label">Vertical Output (9:16)</div>
+          <div class="preview-container preview-vertical">
+            <canvas id="preview-vertical-canvas" class="preview-canvas"></canvas>
+            <div id="preview-vertical-loading" class="preview-loading">Loading...</div>
+          </div>
+        </div>
+
+        <!-- Adjustment controls -->
+        <div class="controls-section">
+          <div class="control-group">
+            <div class="control-row">
+              <span class="control-label">X Position</span>
+              <input type="range" id="facecam-x" class="control-slider" min="0" max="1920" value="0" step="1" />
+              <span class="control-value" id="facecam-x-value">0 px</span>
+            </div>
+            <div class="control-row">
+              <span class="control-label">Y Position</span>
+              <input type="range" id="facecam-y" class="control-slider" min="0" max="1080" value="0" step="1" />
+              <span class="control-value" id="facecam-y-value">0 px</span>
+            </div>
+            <div class="control-row">
+              <span class="control-label">Width</span>
+              <input type="range" id="facecam-width" class="control-slider" min="100" max="1920" value="400" step="1" />
+              <span class="control-value" id="facecam-width-value">400 px</span>
+            </div>
+            <div class="control-row">
+              <span class="control-label">Height</span>
+              <input type="range" id="facecam-height" class="control-slider" min="100" max="1080" value="300" step="1" />
+              <span class="control-value" id="facecam-height-value">300 px</span>
+            </div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="editor-actions">
+            <button class="editor-btn editor-btn-secondary" id="detect-btn" onclick="detectFacecam()">🔍 Auto-Detect</button>
+            <button class="editor-btn editor-btn-secondary" id="undo-btn" onclick="undoAdjustment()" disabled>↶ Undo</button>
+            <button class="editor-btn editor-btn-secondary" id="redo-btn" onclick="redoAdjustment()" disabled>↷ Redo</button>
+            <button class="editor-btn editor-btn-secondary" onclick="closeVerticalEditor()">Cancel</button>
+            <button class="editor-btn editor-btn-primary" id="confirm-btn" onclick="confirmPlacement()" disabled>✓ Confirm & Process All Clips</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -1410,12 +1683,20 @@ function renderClips(clips, jobId) {
     el.innerHTML = '<div class="empty-state">Clips will appear here once a job completes.</div>';
     return;
   }
+  
+  // Format to Vertical button (appears at top of clips list)
+  const formatVerticalBtn = `
+    <button class="format-vertical-btn" onclick="openVerticalEditor('${esc(jobId)}')">
+      📱 Format to Vertical (9:16)
+    </button>
+  `;
+  
   const downloadAllBtn = clips.length >= 2
     ? `<div style="margin-bottom:10px">
         <button class="btn-sm btn-download" onclick="downloadAll('${esc(jobId)}')">⬇ Download All</button>
        </div>`
     : '';
-  el.innerHTML = downloadAllBtn + clips.map((c, i) => `
+  el.innerHTML = formatVerticalBtn + downloadAllBtn + clips.map((c, i) => `
     <div class="clip-card">
       <div class="clip-card-header" onclick="toggleWhy(${i})">
         <div class="clip-rank">${i + 1}</div>
@@ -1694,6 +1975,396 @@ function loadSettings() {
    ================================================================ */
 loadSettings();
 startPolling();
+
+/* ================================================================
+   Vertical Formatting Editor
+   ================================================================ */
+let editorState = {
+  sessionId: null,
+  jobId: null,
+  clipPaths: [],
+  referenceClip: null,
+  facecamRegion: { x: 0, y: 0, width: 400, height: 300 },
+  sourceWidth: 1920,
+  sourceHeight: 1080,
+  canUndo: false,
+  canRedo: false,
+};
+
+async function openVerticalEditor(jobId) {
+  editorState.jobId = jobId;
+  
+  // Show overlay
+  document.getElementById('vertical-editor-overlay').classList.add('open');
+  
+  // Show loading status
+  showEditorStatus('Loading clips...', 'info');
+  
+  try {
+    // Get job details to find clip paths
+    const res = await fetch(`/api/jobs/${jobId}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load job');
+    
+    if (!data.clips || data.clips.length === 0) {
+      throw new Error('No clips found in this job');
+    }
+    
+    // Extract clip paths from the job
+    editorState.clipPaths = data.clips.map(c => c.path || c.download_url);
+    editorState.referenceClip = editorState.clipPaths[0];
+    
+    // Create editor session
+    const sessionRes = await fetch('/api/mini-editor/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        job_id: jobId,
+        reference_clip_path: editorState.referenceClip,
+      }),
+    });
+    const sessionData = await sessionRes.json();
+    if (!sessionRes.ok) throw new Error(sessionData.error || 'Failed to create session');
+    
+    editorState.sessionId = sessionData.session_id;
+    editorState.sourceWidth = sessionData.source_width || 1920;
+    editorState.sourceHeight = sessionData.source_height || 1080;
+    
+    // Update slider ranges
+    document.getElementById('facecam-x').max = editorState.sourceWidth;
+    document.getElementById('facecam-y').max = editorState.sourceHeight;
+    document.getElementById('facecam-width').max = editorState.sourceWidth;
+    document.getElementById('facecam-height').max = editorState.sourceHeight;
+    
+    // Load reference clip into horizontal preview
+    await loadHorizontalPreview(editorState.referenceClip);
+    
+    // Auto-detect facecam
+    showEditorStatus('Detecting facecam...', 'info');
+    await detectFacecam();
+    
+  } catch (err) {
+    showEditorStatus(`Error: ${err.message}`, 'error');
+  }
+}
+
+function closeVerticalEditor() {
+  document.getElementById('vertical-editor-overlay').classList.remove('open');
+  
+  // Cancel session if exists
+  if (editorState.sessionId) {
+    fetch('/api/mini-editor/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: editorState.sessionId }),
+    }).catch(() => {});
+  }
+  
+  // Reset state
+  editorState = {
+    sessionId: null,
+    jobId: null,
+    clipPaths: [],
+    referenceClip: null,
+    facecamRegion: { x: 0, y: 0, width: 400, height: 300 },
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    canUndo: false,
+    canRedo: false,
+  };
+}
+
+async function loadHorizontalPreview(clipPath) {
+  const canvas = document.getElementById('preview-horizontal-canvas');
+  const ctx = canvas.getContext('2d');
+  const loading = document.getElementById('preview-horizontal-loading');
+  
+  loading.style.display = '';
+  
+  // For now, just draw a placeholder
+  // In a full implementation, we'd load a video frame
+  canvas.width = editorState.sourceWidth;
+  canvas.height = editorState.sourceHeight;
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#6c7086';
+  ctx.font = '24px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Source Clip Preview', canvas.width / 2, canvas.height / 2);
+  
+  loading.style.display = 'none';
+}
+
+async function detectFacecam() {
+  if (!editorState.sessionId) return;
+  
+  const detectBtn = document.getElementById('detect-btn');
+  detectBtn.disabled = true;
+  detectBtn.textContent = '🔍 Detecting...';
+  
+  showEditorStatus('Analyzing video for facecam...', 'info');
+  
+  try {
+    const res = await fetch('/api/mini-editor/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: editorState.sessionId,
+        clip_path: editorState.referenceClip,
+      }),
+    });
+    const data = await res.json();
+    
+    if (!res.ok) {
+      // Detection failed - offer manual or fallback
+      showEditorStatus(
+        `Auto-detection failed: ${data.error || 'No facecam found'}. Adjust manually or use fallback fill.`,
+        'warning'
+      );
+      detectBtn.textContent = '🔍 Auto-Detect';
+      detectBtn.disabled = false;
+      return;
+    }
+    
+    // Update facecam region
+    editorState.facecamRegion = data.facecam_region;
+    updateFacecamControls();
+    updateFacecamBox();
+    
+    // Show confidence
+    const confidence = data.confidence || 0;
+    const confidenceBadge = document.getElementById('confidence-badge');
+    confidenceBadge.textContent = `Confidence: ${(confidence * 100).toFixed(0)}%`;
+    confidenceBadge.style.display = '';
+    
+    // Generate preview
+    await generatePreview();
+    
+    showEditorStatus(`Facecam detected with ${(confidence * 100).toFixed(0)}% confidence. Adjust if needed.`, 'success');
+    document.getElementById('confirm-btn').disabled = false;
+    
+  } catch (err) {
+    showEditorStatus(`Detection error: ${err.message}`, 'error');
+  }
+  
+  detectBtn.textContent = '🔍 Auto-Detect';
+  detectBtn.disabled = false;
+}
+
+function updateFacecamControls() {
+  const { x, y, width, height } = editorState.facecamRegion;
+  
+  document.getElementById('facecam-x').value = x;
+  document.getElementById('facecam-y').value = y;
+  document.getElementById('facecam-width').value = width;
+  document.getElementById('facecam-height').value = height;
+  
+  document.getElementById('facecam-x-value').textContent = `${x} px`;
+  document.getElementById('facecam-y-value').textContent = `${y} px`;
+  document.getElementById('facecam-width-value').textContent = `${width} px`;
+  document.getElementById('facecam-height-value').textContent = `${height} px`;
+}
+
+function updateFacecamBox() {
+  const box = document.getElementById('facecam-box-horizontal');
+  const canvas = document.getElementById('preview-horizontal-canvas');
+  const container = canvas.parentElement;
+  
+  // Calculate scale factor
+  const scaleX = container.clientWidth / editorState.sourceWidth;
+  const scaleY = container.clientHeight / editorState.sourceHeight;
+  const scale = Math.min(scaleX, scaleY);
+  
+  const { x, y, width, height } = editorState.facecamRegion;
+  
+  box.style.left = `${x * scale}px`;
+  box.style.top = `${y * scale}px`;
+  box.style.width = `${width * scale}px`;
+  box.style.height = `${height * scale}px`;
+  box.style.display = '';
+}
+
+async function generatePreview() {
+  const loading = document.getElementById('preview-vertical-loading');
+  loading.style.display = '';
+  
+  try {
+    const res = await fetch('/api/mini-editor/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: editorState.sessionId,
+        facecam_region: editorState.facecamRegion,
+      }),
+    });
+    const data = await res.json();
+    
+    if (!res.ok) throw new Error(data.error || 'Preview generation failed');
+    
+    // Load preview image into vertical canvas
+    const canvas = document.getElementById('preview-vertical-canvas');
+    const ctx = canvas.getContext('2d');
+    
+    if (data.preview_image_url) {
+      const img = new Image();
+      img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        loading.style.display = 'none';
+      };
+      img.onerror = () => {
+        loading.textContent = 'Failed to load preview';
+      };
+      img.src = data.preview_image_url;
+    } else {
+      // Fallback: draw placeholder
+      canvas.width = 1080;
+      canvas.height = 1920;
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#6c7086';
+      ctx.font = '20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Vertical Preview', canvas.width / 2, canvas.height / 2);
+      loading.style.display = 'none';
+    }
+    
+  } catch (err) {
+    loading.textContent = `Preview error: ${err.message}`;
+  }
+}
+
+// Slider input handlers
+['facecam-x', 'facecam-y', 'facecam-width', 'facecam-height'].forEach(id => {
+  const slider = document.getElementById(id);
+  const valueEl = document.getElementById(id + '-value');
+  
+  slider.addEventListener('input', () => {
+    const val = parseInt(slider.value);
+    valueEl.textContent = `${val} px`;
+    
+    // Update facecam region
+    const prop = id.replace('facecam-', '');
+    editorState.facecamRegion[prop] = val;
+    
+    // Update box and preview (debounced)
+    updateFacecamBox();
+    clearTimeout(slider._debounce);
+    slider._debounce = setTimeout(() => {
+      generatePreview();
+    }, 300);
+  });
+});
+
+async function confirmPlacement() {
+  if (!editorState.sessionId) return;
+  
+  const confirmBtn = document.getElementById('confirm-btn');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = '⏳ Processing...';
+  
+  showEditorStatus('Applying vertical formatting to all clips...', 'info');
+  
+  try {
+    const res = await fetch('/api/mini-editor/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: editorState.sessionId,
+        facecam_region: editorState.facecamRegion,
+        settings: {
+          create_backup: true,
+          replace_originals: false,
+        },
+      }),
+    });
+    const data = await res.json();
+    
+    if (!res.ok) throw new Error(data.error || 'Confirmation failed');
+    
+    showEditorStatus(
+      `Processing started! Job ID: ${data.job_id}. Check the job queue for progress.`,
+      'success'
+    );
+    
+    // Close editor after 2 seconds
+    setTimeout(() => {
+      closeVerticalEditor();
+      // Refresh jobs to show the new formatting job
+      refreshJobs();
+    }, 2000);
+    
+  } catch (err) {
+    showEditorStatus(`Error: ${err.message}`, 'error');
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = '✓ Confirm & Process All Clips';
+  }
+}
+
+async function undoAdjustment() {
+  if (!editorState.sessionId) return;
+  
+  try {
+    const res = await fetch('/api/mini-editor/undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: editorState.sessionId }),
+    });
+    const data = await res.json();
+    
+    if (!res.ok) throw new Error(data.error || 'Undo failed');
+    
+    editorState.facecamRegion = data.facecam_region;
+    editorState.canUndo = data.can_undo;
+    editorState.canRedo = data.can_redo;
+    
+    updateFacecamControls();
+    updateFacecamBox();
+    generatePreview();
+    
+    document.getElementById('undo-btn').disabled = !editorState.canUndo;
+    document.getElementById('redo-btn').disabled = !editorState.canRedo;
+    
+  } catch (err) {
+    showEditorStatus(`Undo error: ${err.message}`, 'error');
+  }
+}
+
+async function redoAdjustment() {
+  if (!editorState.sessionId) return;
+  
+  try {
+    const res = await fetch('/api/mini-editor/redo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: editorState.sessionId }),
+    });
+    const data = await res.json();
+    
+    if (!res.ok) throw new Error(data.error || 'Redo failed');
+    
+    editorState.facecamRegion = data.facecam_region;
+    editorState.canUndo = data.can_undo;
+    editorState.canRedo = data.can_redo;
+    
+    updateFacecamControls();
+    updateFacecamBox();
+    generatePreview();
+    
+    document.getElementById('undo-btn').disabled = !editorState.canUndo;
+    document.getElementById('redo-btn').disabled = !editorState.canRedo;
+    
+  } catch (err) {
+    showEditorStatus(`Redo error: ${err.message}`, 'error');
+  }
+}
+
+function showEditorStatus(message, type) {
+  const container = document.getElementById('editor-status-container');
+  container.innerHTML = `<div class="editor-status editor-status-${type}">${esc(message)}</div>`;
+}
+
 </script>
 </body>
 </html>
