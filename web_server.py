@@ -54,6 +54,8 @@ from pipeline.audio_extractor import extract_audio
 from pipeline.clip_extractor import extract_clips, generate_thumbnail
 from pipeline.clip_selector import select_clips
 from pipeline.exceptions import PipelineError
+from pipeline.facecam_relocator import FacecamRelocator
+from pipeline.models import SessionStore, VerticalFormattingJob
 from pipeline.report_generator import generate_report
 from pipeline.scorer import score_segments
 from pipeline.subtitle_generator import generate_subtitles
@@ -162,6 +164,79 @@ class Job:
 # In-memory job registry (job_id -> Job)
 _jobs: dict[str, Job] = {}
 _jobs_lock = threading.Lock()
+
+# In-memory session store for mini-editor
+_session_store = SessionStore()
+
+# In-memory detection cache for mini-editor
+# Key: (clip_path, frame_width, frame_height, mtime)
+# Value: dict with facecam_region data or None
+_detection_cache: dict[tuple, dict | None] = {}
+_detection_cache_lock = threading.Lock()
+
+# In-memory preview cache for mini-editor
+# Key: (clip_path, facecam_x, facecam_y, facecam_width, facecam_height, mtime)
+# Value: preview image path
+_preview_cache: dict[tuple, str] = {}
+_preview_cache_lock = threading.Lock()
+
+# In-memory store for VerticalFormattingJob objects
+# Key: job_id (str)
+# Value: VerticalFormattingJob
+_formatting_jobs: dict[str, "VerticalFormattingJob"] = {}
+_formatting_jobs_lock = threading.Lock()
+
+# Queue for VerticalFormattingJob IDs waiting to be processed
+_formatting_job_queue: queue.Queue = queue.Queue()
+
+
+def _vertical_formatting_worker() -> None:
+    """Background worker thread that processes queued VerticalFormattingJobs.
+
+    Runs indefinitely as a daemon thread.  Picks job IDs from
+    ``_formatting_job_queue``, looks them up in ``_formatting_jobs``, and
+    calls ``process_vertical_formatting_job()`` from the vertical formatter.
+    """
+    from pipeline.vertical_formatter import process_vertical_formatting_job as _process_job
+
+    _wlog = logging.getLogger(__name__)
+    while True:
+        try:
+            job_id = _formatting_job_queue.get(timeout=5)
+        except queue.Empty:
+            continue
+
+        try:
+            with _formatting_jobs_lock:
+                formatting_job = _formatting_jobs.get(job_id)
+
+            if formatting_job is None:
+                _wlog.warning("Vertical formatting worker: job %s not found", job_id)
+                continue
+
+            if formatting_job.status == "cancelled":
+                _wlog.info("Vertical formatting worker: job %s already cancelled", job_id)
+                continue
+
+            _wlog.info("Vertical formatting worker: starting job %s", job_id)
+            _process_job(formatting_job)
+            _wlog.info(
+                "Vertical formatting worker: finished job %s with status %s",
+                job_id, formatting_job.status,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _wlog.exception("Vertical formatting worker: unexpected error for job %s: %s", job_id, exc)
+        finally:
+            _formatting_job_queue.task_done()
+
+
+# Start the background vertical formatting worker thread
+_vertical_formatting_thread = threading.Thread(
+    target=_vertical_formatting_worker,
+    daemon=True,
+    name="vertical-formatting-worker",
+)
+_vertical_formatting_thread.start()
 
 
 def _get_job(job_id: str) -> Job | None:
@@ -403,6 +478,15 @@ def index():
     if index_path.exists():
         return send_from_directory(str(WEB_DIR), "index.html")
     return Response("web/index.html not found", status=404)
+
+
+@app.route("/mini-editor")
+def serve_mini_editor():
+    """Serve the Mini Video Editor single-page app."""
+    mini_editor_path = WEB_DIR / "mini_editor.html"
+    if mini_editor_path.exists():
+        return send_from_directory(str(WEB_DIR), "mini_editor.html")
+    return Response("web/mini_editor.html not found", status=404)
 
 
 @app.route("/output/<path:filename>")
@@ -741,6 +825,1290 @@ def list_ollama_models():
 
 
 # ---------------------------------------------------------------------------
+# API: Mini Video Editor
+# ---------------------------------------------------------------------------
+
+@app.route("/api/mini-editor/session", methods=["POST"])
+def create_mini_editor_session():
+    """Initialize a mini video editor session.
+    
+    Request JSON:
+        {
+            "clip_batch_id": str,           # Job ID or batch identifier
+            "reference_clip_path": str      # Path to the reference clip (first clip)
+        }
+    
+    Response JSON:
+        {
+            "session_id": str,              # UUID for the session
+            "clips": [                      # List of clips in the batch
+                {
+                    "path": str,
+                    "name": str,
+                    "resolution": [int, int]  # [width, height]
+                }
+            ],
+            "reference_clip": {             # Details of the reference clip
+                "path": str,
+                "name": str,
+                "resolution": [int, int]
+            },
+            "error": str | null
+        }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    
+    try:
+        if not data:
+            return jsonify({"error": "Request body must be JSON"}), 400
+        
+        clip_batch_id = data.get("clip_batch_id")
+        reference_clip_path = data.get("reference_clip_path")
+        
+        # Validate required fields
+        if not clip_batch_id:
+            return jsonify({"error": "clip_batch_id is required"}), 400
+        if not reference_clip_path:
+            return jsonify({"error": "reference_clip_path is required"}), 400
+        
+        # Check if reference clip exists
+        if not os.path.exists(reference_clip_path):
+            return jsonify({"error": f"Reference clip not found: {reference_clip_path}"}), 404
+        
+        # Get the job to retrieve all clips in the batch
+        job = _get_job(clip_batch_id)
+        if job is None:
+            return jsonify({"error": f"Job not found: {clip_batch_id}"}), 404
+        
+        if job.status != JobStatus.DONE:
+            return jsonify({"error": "Job is not complete yet"}), 400
+        
+        if not job.result_clips:
+            return jsonify({"error": "Job has no clips"}), 400
+        
+        # Get resolution of reference clip using FFprobe
+        import subprocess
+        ffprobe_cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            reference_clip_path,
+        ]
+        
+        result = subprocess.run(
+            ffprobe_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        
+        if result.returncode != 0:
+            return jsonify({
+                "error": f"Failed to get video resolution: {result.stderr[:200]}"
+            }), 500
+        
+        try:
+            probe_data = json.loads(result.stdout)
+            streams = probe_data.get("streams", [])
+            if not streams:
+                return jsonify({"error": "No video stream found in reference clip"}), 400
+            
+            frame_width = streams[0].get("width")
+            frame_height = streams[0].get("height")
+            
+            if not frame_width or not frame_height:
+                return jsonify({"error": "Could not determine video resolution"}), 400
+        except (json.JSONDecodeError, KeyError, IndexError) as exc:
+            return jsonify({"error": f"Failed to parse FFprobe output: {exc}"}), 500
+        
+        reference_resolution = (frame_width, frame_height)
+        
+        # Run facecam detection on reference clip
+        config = Config(work_dir=tempfile.gettempdir())
+        relocator = FacecamRelocator()
+        facecam_region = relocator.detect_facecam(
+            clip_path=reference_clip_path,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            config=config,
+        )
+        
+        # If detection fails, create a default region (will be handled by frontend)
+        if facecam_region is None:
+            # Create a default facecam region in top-right corner (common placement)
+            # Use 15% of frame area as default
+            default_width = int(frame_width * 0.4)
+            default_height = int(frame_height * 0.4)
+            default_x = frame_width - default_width - 10
+            default_y = 10
+            
+            from pipeline.models import FacecamRegion
+            facecam_region = FacecamRegion(
+                x=default_x,
+                y=default_y,
+                width=default_width,
+                height=default_height,
+                corner="top-right",
+                confidence=0.0,  # Zero confidence indicates default/manual placement
+            )
+        
+        # Compute canvas layout
+        from pipeline.frame_reformatter import compute_canvas_layout
+        canvas_layout = compute_canvas_layout(config)
+        
+        # Create session
+        session = _session_store.create_session(
+            clip_batch_id=clip_batch_id,
+            reference_clip_path=reference_clip_path,
+            reference_resolution=reference_resolution,
+            facecam_region=facecam_region,
+            canvas_layout=canvas_layout,
+        )
+        
+        # Build clips list with resolution info
+        clips = []
+        for clip_data in job.result_clips:
+            clip_path = clip_data["path"]
+            
+            # Get resolution for each clip
+            ffprobe_cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "json",
+                clip_path,
+            ]
+            
+            result = subprocess.run(
+                ffprobe_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            
+            if result.returncode == 0:
+                try:
+                    probe_data = json.loads(result.stdout)
+                    streams = probe_data.get("streams", [])
+                    if streams:
+                        clip_width = streams[0].get("width", frame_width)
+                        clip_height = streams[0].get("height", frame_height)
+                    else:
+                        clip_width, clip_height = frame_width, frame_height
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    clip_width, clip_height = frame_width, frame_height
+            else:
+                # Fallback to reference resolution if probe fails
+                clip_width, clip_height = frame_width, frame_height
+            
+            clips.append({
+                "path": clip_path,
+                "name": clip_data["name"],
+                "resolution": [clip_width, clip_height],
+            })
+        
+        # Build reference clip info
+        reference_clip = {
+            "path": reference_clip_path,
+            "name": os.path.basename(reference_clip_path),
+            "resolution": [frame_width, frame_height],
+        }
+        
+        return jsonify({
+            "session_id": session.session_id,
+            "clips": clips,
+            "reference_clip": reference_clip,
+            "error": None,
+        }), 201
+        
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in create_mini_editor_session")
+        return jsonify({
+            "session_id": None,
+            "clips": [],
+            "reference_clip": None,
+            "error": f"Internal error: {str(exc)}",
+        }), 500
+
+
+@app.route("/api/mini-editor/detect", methods=["POST"])
+def detect_facecam_endpoint():
+    """Detect facecam region in a clip using FacecamRelocator.
+    
+    Request JSON:
+        {
+            "clip_path": str,           # Path to the clip file
+            "frame_width": int,         # Frame width in pixels
+            "frame_height": int,        # Frame height in pixels
+            "config": dict (optional)   # Config overrides
+        }
+    
+    Response JSON:
+        {
+            "facecam_region": {
+                "x": int,
+                "y": int,
+                "width": int,
+                "height": int,
+                "corner": str,
+                "confidence": float
+            } | null,
+            "error": str | null,
+            "cached": bool              # True if result was from cache
+        }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    
+    try:
+        if not data:
+            return jsonify({"error": "Request body must be JSON"}), 400
+        
+        clip_path = data.get("clip_path")
+        frame_width = data.get("frame_width")
+        frame_height = data.get("frame_height")
+        
+        # Validate required fields
+        if not clip_path:
+            return jsonify({"error": "clip_path is required"}), 400
+        if not frame_width or not isinstance(frame_width, int):
+            return jsonify({"error": "frame_width must be an integer"}), 400
+        if not frame_height or not isinstance(frame_height, int):
+            return jsonify({"error": "frame_height must be an integer"}), 400
+        
+        # Check if clip exists
+        if not os.path.exists(clip_path):
+            return jsonify({"error": f"Clip not found: {clip_path}"}), 404
+        
+        # Get file modification time for cache invalidation
+        try:
+            mtime = os.path.getmtime(clip_path)
+        except OSError:
+            mtime = 0
+        
+        # Build cache key
+        cache_key = (clip_path, frame_width, frame_height, mtime)
+        
+        # Check cache first
+        with _detection_cache_lock:
+            cached_result = _detection_cache.get(cache_key)
+        
+        if cached_result is not None:
+            # Cache hit - return cached result
+            return jsonify({
+                **cached_result,
+                "cached": True
+            }), 200
+        
+        # Cache miss - run detection
+        # Build config (use defaults, allow overrides)
+        config_overrides = data.get("config", {})
+        config = Config(work_dir=tempfile.gettempdir())
+        
+        # Apply config overrides if provided
+        for key, value in config_overrides.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+        
+        # Run detection
+        relocator = FacecamRelocator()
+        facecam_region = relocator.detect_facecam(
+            clip_path=clip_path,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            config=config,
+        )
+        
+        # Build result
+        if facecam_region is None:
+            # Determine reason for detection failure
+            # Check area fraction to give a more specific reason
+            reason = "no_pip_detected"
+            # We can't know the exact reason without more info, but we can
+            # provide a structured error with fallback options
+            result = {
+                "facecam_region": None,
+                "error": "No valid facecam region detected",
+                "reason": reason,
+                "offer_manual_selection": True,
+                "offer_fallback": True,
+            }
+        else:
+            result = {
+                "facecam_region": {
+                    "x": facecam_region.x,
+                    "y": facecam_region.y,
+                    "width": facecam_region.width,
+                    "height": facecam_region.height,
+                    "corner": facecam_region.corner,
+                    "confidence": facecam_region.confidence,
+                },
+                "error": None,
+                "reason": None,
+                "offer_manual_selection": False,
+                "offer_fallback": False,
+            }
+        
+        # Store in cache
+        with _detection_cache_lock:
+            _detection_cache[cache_key] = result
+        
+        # Return result with cached=False
+        return jsonify({
+            **result,
+            "cached": False
+        }), 200
+        
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in detect_facecam_endpoint")
+        return jsonify({
+            "facecam_region": None,
+            "error": f"Internal error: {str(exc)}",
+            "cached": False
+        }), 500
+
+
+@app.route("/api/mini-editor/manual-region", methods=["POST"])
+def set_manual_region_endpoint():
+    """Accept a manually-drawn bounding box and store it in the session.
+
+    Allows users to manually specify a facecam region when auto-detection fails.
+    The region is validated against area fraction constraints before being stored.
+
+    Request JSON:
+        {
+            "session_id": str,
+            "facecam_region": {
+                "x": int, "y": int, "width": int, "height": int,
+                "corner": str (optional), "confidence": float (optional)
+            }
+        }
+
+    Response JSON:
+        { "facecam_region": { ... }, "error": str | null }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    try:
+        if not data:
+            return jsonify({"error": "Request body must be JSON"}), 400
+
+        session_id = data.get("session_id")
+        facecam_region_data = data.get("facecam_region")
+
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+        if not facecam_region_data:
+            return jsonify({"error": "facecam_region is required"}), 400
+
+        for fld in ["x", "y", "width", "height"]:
+            if fld not in facecam_region_data:
+                return jsonify({"error": f"facecam_region.{fld} is required"}), 400
+
+        session = _session_store.get_session(session_id)
+        if session is None:
+            return jsonify({"error": f"Session not found or expired: {session_id}"}), 404
+
+        frame_width, frame_height = session.reference_resolution
+
+        try:
+            x = int(facecam_region_data["x"])
+            y = int(facecam_region_data["y"])
+            width = int(facecam_region_data["width"])
+            height = int(facecam_region_data["height"])
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid facecam_region values: {exc}"}), 400
+
+        if x < 0 or y < 0:
+            return jsonify({"error": "facecam_region x and y must be >= 0"}), 400
+        if width <= 0 or height <= 0:
+            return jsonify({"error": "facecam_region width and height must be > 0"}), 400
+        if x + width > frame_width:
+            return jsonify({"error": f"facecam_region extends beyond frame width ({frame_width})"}), 400
+        if y + height > frame_height:
+            return jsonify({"error": f"facecam_region extends beyond frame height ({frame_height})"}), 400
+
+        config = Config(work_dir=tempfile.gettempdir())
+        frame_area = frame_width * frame_height
+        region_area = width * height
+        area_fraction = region_area / frame_area
+
+        if area_fraction < config.facecam_min_area_fraction:
+            return jsonify({
+                "error": (
+                    f"Region area fraction ({area_fraction:.3f}) is below minimum "
+                    f"({config.facecam_min_area_fraction}). The region is too small."
+                )
+            }), 400
+        if area_fraction > config.facecam_max_area_fraction:
+            return jsonify({
+                "error": (
+                    f"Region area fraction ({area_fraction:.3f}) exceeds maximum "
+                    f"({config.facecam_max_area_fraction}). The region is too large."
+                )
+            }), 400
+
+        # Compute corner from position if not provided
+        center_x = x + width / 2
+        center_y = y + height / 2
+        if center_x < frame_width / 2:
+            computed_corner = "top-left" if center_y < frame_height / 2 else "bottom-left"
+        else:
+            computed_corner = "top-right" if center_y < frame_height / 2 else "bottom-right"
+
+        corner = facecam_region_data.get("corner", computed_corner)
+        confidence = float(facecam_region_data.get("confidence", 1.0))
+
+        from pipeline.models import FacecamRegion as _FacecamRegion
+        new_region = _FacecamRegion(
+            x=x, y=y, width=width, height=height,
+            corner=corner, confidence=confidence,
+        )
+
+        # Push current region to undo history before updating
+        session.push_undo(session.facecam_region)
+        session.facecam_region = new_region
+        session.refresh_expiry()
+
+        return jsonify({
+            "facecam_region": {
+                "x": new_region.x,
+                "y": new_region.y,
+                "width": new_region.width,
+                "height": new_region.height,
+                "corner": new_region.corner,
+                "confidence": new_region.confidence,
+            },
+            "error": None,
+        }), 200
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in set_manual_region_endpoint")
+        return jsonify({"error": f"Internal error: {str(exc)}"}), 500
+
+
+@app.route("/api/mini-editor/fallback", methods=["POST"])
+def set_fallback_fill_endpoint():
+    """Set use_fallback_fill=True on the session.
+
+    When fallback fill is enabled, the vertical formatter will use blurred
+    gameplay fill in the top region instead of a facecam overlay.
+
+    Request JSON:
+        { "session_id": str }
+
+    Response JSON:
+        { "use_fallback_fill": bool, "error": str | null }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    try:
+        if not data:
+            return jsonify({"error": "Request body must be JSON"}), 400
+
+        session_id = data.get("session_id")
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+
+        session = _session_store.get_session(session_id)
+        if session is None:
+            return jsonify({"error": f"Session not found or expired: {session_id}"}), 404
+
+        session.settings["use_fallback_fill"] = True
+        session.refresh_expiry()
+
+        return jsonify({
+            "use_fallback_fill": True,
+            "error": None,
+        }), 200
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in set_fallback_fill_endpoint")
+        return jsonify({"error": f"Internal error: {str(exc)}"}), 500
+
+
+@app.route("/api/mini-editor/preview", methods=["POST"])
+def generate_preview_endpoint():
+    """Generate a preview image showing the vertical canvas with facecam placement.
+
+
+    Request JSON:
+        {
+            "clip_path": str,           # Path to the clip file
+            "facecam_region": {         # Facecam region to preview
+                "x": int,
+                "y": int,
+                "width": int,
+                "height": int,
+                "corner": str,
+                "confidence": float
+            },
+            "frame_width": int,         # Source frame width
+            "frame_height": int,        # Source frame height
+            "config": dict (optional)   # Config overrides
+        }
+    
+    Response JSON:
+        {
+            "preview_image_url": str,   # URL to the preview image
+            "canvas_layout": {          # Canvas layout used
+                "canvas_width": int,
+                "canvas_height": int,
+                "facecam_x": int,
+                "facecam_y": int,
+                "facecam_width": int,
+                "facecam_height": int,
+                "gameplay_x": int,
+                "gameplay_y": int,
+                "gameplay_width": int,
+                "gameplay_height": int
+            },
+            "error": str | null,
+            "cached": bool              # True if result was from cache
+        }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    
+    try:
+        if not data:
+            return jsonify({"error": "Request body must be JSON"}), 400
+        
+        clip_path = data.get("clip_path")
+        facecam_region_data = data.get("facecam_region")
+        frame_width = data.get("frame_width")
+        frame_height = data.get("frame_height")
+        
+        # Validate required fields
+        if not clip_path:
+            return jsonify({"error": "clip_path is required"}), 400
+        if not facecam_region_data:
+            return jsonify({"error": "facecam_region is required"}), 400
+        if not frame_width or not isinstance(frame_width, int):
+            return jsonify({"error": "frame_width must be an integer"}), 400
+        if not frame_height or not isinstance(frame_height, int):
+            return jsonify({"error": "frame_height must be an integer"}), 400
+        
+        # Validate facecam_region structure
+        required_region_fields = ["x", "y", "width", "height", "corner", "confidence"]
+        for field in required_region_fields:
+            if field not in facecam_region_data:
+                return jsonify({"error": f"facecam_region.{field} is required"}), 400
+        
+        # Check if clip exists
+        if not os.path.exists(clip_path):
+            return jsonify({"error": f"Clip not found: {clip_path}"}), 404
+        
+        # Get file modification time for cache invalidation
+        try:
+            mtime = os.path.getmtime(clip_path)
+        except OSError:
+            mtime = 0
+        
+        # Build cache key based on facecam region coordinates
+        cache_key = (
+            clip_path,
+            facecam_region_data["x"],
+            facecam_region_data["y"],
+            facecam_region_data["width"],
+            facecam_region_data["height"],
+            mtime
+        )
+        
+        # Check cache first
+        with _preview_cache_lock:
+            cached_preview_path = _preview_cache.get(cache_key)
+        
+        if cached_preview_path and os.path.exists(cached_preview_path):
+            # Cache hit - return cached preview
+            # Build config to get canvas layout
+            config_overrides = data.get("config", {})
+            config = Config(work_dir=tempfile.gettempdir())
+            for key, value in config_overrides.items():
+                if hasattr(config, key):
+                    setattr(config, key, value)
+            
+            from pipeline.frame_reformatter import compute_canvas_layout
+            canvas_layout = compute_canvas_layout(config)
+            
+            preview_filename = os.path.basename(cached_preview_path)
+            return jsonify({
+                "preview_image_url": f"/output/{preview_filename}",
+                "canvas_layout": {
+                    "canvas_width": canvas_layout.canvas_width,
+                    "canvas_height": canvas_layout.canvas_height,
+                    "facecam_x": canvas_layout.facecam_x,
+                    "facecam_y": canvas_layout.facecam_y,
+                    "facecam_width": canvas_layout.facecam_width,
+                    "facecam_height": canvas_layout.facecam_height,
+                    "gameplay_x": canvas_layout.gameplay_x,
+                    "gameplay_y": canvas_layout.gameplay_y,
+                    "gameplay_width": canvas_layout.gameplay_width,
+                    "gameplay_height": canvas_layout.gameplay_height,
+                },
+                "error": None,
+                "cached": True
+            }), 200
+        
+        # Cache miss - generate preview
+        # Build config (use defaults, allow overrides)
+        config_overrides = data.get("config", {})
+        config = Config(work_dir=tempfile.gettempdir())
+        
+        # Apply config overrides if provided
+        for key, value in config_overrides.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+        
+        # Compute canvas layout
+        from pipeline.frame_reformatter import compute_canvas_layout, FrameReformatter
+        canvas_layout = compute_canvas_layout(config)
+        
+        # Reconstruct FacecamRegion from data
+        from pipeline.models import FacecamRegion
+        facecam_region = FacecamRegion(
+            x=facecam_region_data["x"],
+            y=facecam_region_data["y"],
+            width=facecam_region_data["width"],
+            height=facecam_region_data["height"],
+            corner=facecam_region_data["corner"],
+            confidence=facecam_region_data["confidence"],
+        )
+        
+        # Generate preview image using FFmpeg
+        # We'll extract a single frame from the clip and apply the vertical formatting
+        import subprocess
+        
+        # Create output path for preview image (use lower resolution for performance)
+        preview_width = 540  # Half of 1080 for faster generation
+        preview_height = 960  # Half of 1920
+        
+        # Generate unique filename for preview
+        preview_filename = f"preview_{uuid.uuid4().hex[:8]}.jpg"
+        preview_path = OUTPUT_DIR / preview_filename
+        
+        # Build FFmpeg filter for preview
+        # 1. Extract frame at 1 second
+        # 2. Build canvas filter for gameplay region
+        # 3. Crop and overlay facecam region
+        
+        reformatter = FrameReformatter()
+        canvas_filter = reformatter.build_canvas_filter(
+            src_width=frame_width,
+            src_height=frame_height,
+            layout=canvas_layout,
+        )
+        
+        # Build facecam crop and scale filter
+        # Crop facecam from source, scale to fit facecam region on canvas
+        facecam_crop = f"crop={facecam_region.width}:{facecam_region.height}:{facecam_region.x}:{facecam_region.y}"
+        facecam_scale = f"scale={canvas_layout.facecam_width}:{canvas_layout.facecam_height}"
+        
+        # Complete filter chain:
+        # [0:v] -> canvas filter -> [canvas]
+        # [0:v] -> crop facecam -> scale facecam -> [facecam]
+        # [canvas][facecam] -> overlay at (0, 0) -> scale to preview size -> output
+        filter_complex = (
+            f"[0:v]{canvas_filter.filter_str.replace('[0:v]', '').replace('[canvas]', '')}[canvas];"
+            f"[0:v]{facecam_crop},{facecam_scale}[facecam];"
+            f"[canvas][facecam]overlay={canvas_layout.facecam_x}:{canvas_layout.facecam_y},"
+            f"scale={preview_width}:{preview_height}[out]"
+        )
+        
+        # Run FFmpeg to generate preview image
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-ss", "1",  # Seek to 1 second
+            "-i", clip_path,
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-frames:v", "1",  # Extract single frame
+            "-q:v", "2",  # High quality JPEG
+            "-y",  # Overwrite output
+            str(preview_path),
+        ]
+        
+        result = subprocess.run(
+            ffmpeg_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        
+        if result.returncode != 0:
+            _logger = logging.getLogger(__name__)
+            _logger.error(f"FFmpeg preview generation failed: {result.stderr}")
+            return jsonify({
+                "preview_image_url": None,
+                "canvas_layout": None,
+                "error": f"Failed to generate preview: {result.stderr[:200]}",
+                "cached": False
+            }), 500
+        
+        # Store in cache
+        with _preview_cache_lock:
+            _preview_cache[cache_key] = str(preview_path)
+        
+        # Return result
+        return jsonify({
+            "preview_image_url": f"/output/{preview_filename}",
+            "canvas_layout": {
+                "canvas_width": canvas_layout.canvas_width,
+                "canvas_height": canvas_layout.canvas_height,
+                "facecam_x": canvas_layout.facecam_x,
+                "facecam_y": canvas_layout.facecam_y,
+                "facecam_width": canvas_layout.facecam_width,
+                "facecam_height": canvas_layout.facecam_height,
+                "gameplay_x": canvas_layout.gameplay_x,
+                "gameplay_y": canvas_layout.gameplay_y,
+                "gameplay_width": canvas_layout.gameplay_width,
+                "gameplay_height": canvas_layout.gameplay_height,
+            },
+            "error": None,
+            "cached": False
+        }), 200
+        
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in generate_preview_endpoint")
+        return jsonify({
+            "preview_image_url": None,
+            "canvas_layout": None,
+            "error": f"Internal error: {str(exc)}",
+            "cached": False
+        }), 500
+
+
+@app.route("/api/mini-editor/confirm", methods=["POST"])
+def confirm_placement_endpoint():
+    """Confirm facecam placement and create a VerticalFormattingJob.
+
+    Request JSON:
+        {
+            "session_id": str,          # Active editor session ID
+            "facecam_region": {         # Confirmed facecam placement
+                "x": int,
+                "y": int,
+                "width": int,
+                "height": int,
+                "corner": str,
+                "confidence": float
+            },
+            "settings": dict (optional) # User settings (backup, naming, etc.)
+        }
+
+    Response JSON:
+        {
+            "job_id": str,              # UUID for the formatting job
+            "status": str,              # "queued"
+            "error": str | null
+        }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    try:
+        if not data:
+            return jsonify({"error": "Request body must be JSON"}), 400
+
+        session_id = data.get("session_id")
+        facecam_region_data = data.get("facecam_region")
+        settings = data.get("settings", {})
+
+        # Validate required fields
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+        if not facecam_region_data:
+            return jsonify({"error": "facecam_region is required"}), 400
+
+        # Validate facecam_region structure
+        required_region_fields = ["x", "y", "width", "height", "corner", "confidence"]
+        for fld in required_region_fields:
+            if fld not in facecam_region_data:
+                return jsonify({"error": f"facecam_region.{fld} is required"}), 400
+
+        # Look up session
+        session = _session_store.get_session(session_id)
+        if session is None:
+            return jsonify({"error": f"Session not found or expired: {session_id}"}), 404
+
+        # Reconstruct FacecamRegion
+        from pipeline.models import FacecamRegion as _FacecamRegion
+        try:
+            facecam_region = _FacecamRegion(
+                x=int(facecam_region_data["x"]),
+                y=int(facecam_region_data["y"]),
+                width=int(facecam_region_data["width"]),
+                height=int(facecam_region_data["height"]),
+                corner=str(facecam_region_data["corner"]),
+                confidence=float(facecam_region_data["confidence"]),
+            )
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid facecam_region values: {exc}"}), 400
+
+        # Validate facecam_region bounds against reference resolution
+        frame_width, frame_height = session.reference_resolution
+
+        # Check region is within frame bounds
+        if facecam_region.x < 0:
+            return jsonify({"error": "facecam_region.x must be >= 0"}), 400
+        if facecam_region.y < 0:
+            return jsonify({"error": "facecam_region.y must be >= 0"}), 400
+        if facecam_region.width <= 0:
+            return jsonify({"error": "facecam_region.width must be > 0"}), 400
+        if facecam_region.height <= 0:
+            return jsonify({"error": "facecam_region.height must be > 0"}), 400
+        if facecam_region.x + facecam_region.width > frame_width:
+            return jsonify({
+                "error": (
+                    f"facecam_region extends beyond frame width: "
+                    f"x ({facecam_region.x}) + width ({facecam_region.width}) "
+                    f"> frame_width ({frame_width})"
+                )
+            }), 400
+        if facecam_region.y + facecam_region.height > frame_height:
+            return jsonify({
+                "error": (
+                    f"facecam_region extends beyond frame height: "
+                    f"y ({facecam_region.y}) + height ({facecam_region.height}) "
+                    f"> frame_height ({frame_height})"
+                )
+            }), 400
+
+        # Validate area fraction (must be 4%–30% of frame area)
+        frame_area = frame_width * frame_height
+        region_area = facecam_region.width * facecam_region.height
+        area_fraction = region_area / frame_area
+
+        config = Config(work_dir=tempfile.gettempdir())
+        min_fraction = config.facecam_min_area_fraction  # 0.04
+        max_fraction = config.facecam_max_area_fraction  # 0.30
+
+        if area_fraction < min_fraction:
+            return jsonify({
+                "error": (
+                    f"facecam_region area fraction ({area_fraction:.3f}) is below "
+                    f"minimum ({min_fraction}). The facecam region is too small."
+                )
+            }), 400
+        if area_fraction > max_fraction:
+            return jsonify({
+                "error": (
+                    f"facecam_region area fraction ({area_fraction:.3f}) exceeds "
+                    f"maximum ({max_fraction}). The facecam region is too large."
+                )
+            }), 400
+
+        # Get the job to retrieve clips
+        job = _get_job(session.clip_batch_id)
+        if job is None:
+            return jsonify({"error": f"Job not found: {session.clip_batch_id}"}), 404
+
+        # Build clips list for the formatting job
+        clips = []
+        for clip_data in job.result_clips:
+            clips.append({
+                "path": clip_data["path"],
+                "name": clip_data["name"],
+                "resolution": [frame_width, frame_height],
+            })
+
+        # Create VerticalFormattingJob
+        from pipeline.models import VerticalFormattingJob as _VerticalFormattingJob
+        job_id = str(uuid.uuid4())
+        formatting_job = _VerticalFormattingJob(
+            job_id=job_id,
+            session_id=session_id,
+            clip_batch_id=session.clip_batch_id,
+            facecam_region=facecam_region,
+            canvas_layout=session.canvas_layout,
+            settings=settings or {},
+            clips=clips,
+            output_dir=str(OUTPUT_DIR),
+            status="queued",
+        )
+
+        # Update session with confirmed region and clear undo/redo history
+        session.facecam_region = facecam_region
+        session.clear_history()
+        session.refresh_expiry()
+
+        # Store the formatting job in the module-level dict for progress polling
+        with _formatting_jobs_lock:
+            _formatting_jobs[job_id] = formatting_job
+
+        # Enqueue the job for background processing
+        _formatting_job_queue.put(job_id)
+
+        return jsonify({
+            "job_id": job_id,
+            "status": "queued",
+            "error": None,
+        }), 201
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in confirm_placement_endpoint")
+        return jsonify({
+            "job_id": None,
+            "status": None,
+            "error": f"Internal error: {str(exc)}",
+        }), 500
+
+
+@app.route("/api/mini-editor/cancel", methods=["POST"])
+def cancel_editor_session_endpoint():
+    """Cancel an editor session without processing any clips.
+
+    Request JSON:
+        {
+            "session_id": str           # Active editor session ID
+        }
+
+    Response JSON:
+        {
+            "status": str,              # "cancelled"
+            "error": str | null
+        }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    try:
+        if data is None:
+            return jsonify({"error": "Request body must be JSON"}), 400
+
+        session_id = data.get("session_id")
+
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+
+        # Look up session (allow expired sessions to be "cancelled" gracefully)
+        session = _session_store.get_session(session_id)
+        if session is None:
+            # Session may have already expired — treat as already cancelled
+            return jsonify({
+                "status": "cancelled",
+                "error": None,
+            }), 200
+
+        # Clear undo/redo history and delete the session
+        session.clear_history()
+        _session_store.delete_session(session_id)
+
+        return jsonify({
+            "status": "cancelled",
+            "error": None,
+        }), 200
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in cancel_editor_session_endpoint")
+        return jsonify({
+            "status": None,
+            "error": f"Internal error: {str(exc)}",
+        }), 500
+
+
+@app.route("/api/mini-editor/job/<job_id>/cancel", methods=["GET"])
+def cancel_formatting_job_endpoint(job_id: str):
+    """Cancel a running VerticalFormattingJob.
+
+    Sets the job status to "cancelled" so that the processing loop stops
+    before the next clip.  Already-processed clips are preserved.
+
+    URL parameter:
+        job_id: UUID of the VerticalFormattingJob to cancel.
+
+    Response JSON:
+        {
+            "job_id": str,
+            "status": str,      # "cancelled" or current status
+            "error": str | null
+        }
+    """
+    try:
+        with _formatting_jobs_lock:
+            formatting_job = _formatting_jobs.get(job_id)
+
+        if formatting_job is None:
+            return jsonify({
+                "job_id": job_id,
+                "status": None,
+                "error": f"Formatting job not found: {job_id}",
+            }), 404
+
+        # Mark as cancelled — the processing loop checks this flag
+        if formatting_job.status in ("queued", "running"):
+            formatting_job.status = "cancelled"
+
+        return jsonify({
+            "job_id": job_id,
+            "status": formatting_job.status,
+            "error": None,
+        }), 200
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in cancel_formatting_job_endpoint")
+        return jsonify({
+            "job_id": job_id,
+            "status": None,
+            "error": f"Internal error: {str(exc)}",
+        }), 500
+
+
+@app.route("/api/mini-editor/job/<job_id>/progress", methods=["GET"])
+def get_formatting_job_progress(job_id: str):
+    """Poll progress of a VerticalFormattingJob.
+
+    Response JSON:
+        {
+            "job_id": str,
+            "status": str,
+            "clips_processed": int,
+            "clips_total": int,
+            "current_clip": str,
+            "progress_pct": float,
+            "eta_seconds": float,
+            "elapsed_seconds": float,
+            "errors": list[str],
+            "error": str | null
+        }
+    """
+    try:
+        with _formatting_jobs_lock:
+            formatting_job = _formatting_jobs.get(job_id)
+
+        if formatting_job is None:
+            return jsonify({
+                "job_id": job_id,
+                "status": None,
+                "error": f"Formatting job not found: {job_id}",
+            }), 404
+
+        return jsonify({
+            "job_id": job_id,
+            "status": formatting_job.status,
+            "clips_processed": formatting_job.clips_processed,
+            "clips_total": formatting_job.clips_total,
+            "current_clip": formatting_job.current_clip,
+            "progress_pct": formatting_job.get_progress_percentage(),
+            "eta_seconds": formatting_job.estimate_remaining_time(),
+            "elapsed_seconds": formatting_job.get_elapsed_time(),
+            "errors": formatting_job.errors,
+            "error": None,
+        }), 200
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in get_formatting_job_progress")
+        return jsonify({
+            "job_id": job_id,
+            "status": None,
+            "error": f"Internal error: {str(exc)}",
+        }), 500
+
+
+@app.route("/api/mini-editor/undo", methods=["POST"])
+def undo_adjustment_endpoint():
+    """Undo the last facecam region adjustment.
+
+    Pops from undo_history, pushes current region to redo_history,
+    and returns the previous facecam_region.
+
+    Request JSON:
+        {
+            "session_id": str           # Active editor session ID
+        }
+
+    Response JSON:
+        {
+            "facecam_region": {         # Restored previous placement (or null if nothing to undo)
+                "x": int,
+                "y": int,
+                "width": int,
+                "height": int,
+                "corner": str,
+                "confidence": float
+            } | null,
+            "can_undo": bool,           # True if more undo steps are available
+            "can_redo": bool,           # True if redo is available
+            "error": str | null
+        }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    try:
+        if data is None:
+            return jsonify({"error": "Request body must be JSON"}), 400
+
+        session_id = data.get("session_id")
+
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+
+        session = _session_store.get_session(session_id)
+        if session is None:
+            return jsonify({"error": f"Session not found or expired: {session_id}"}), 404
+
+        # Pop from undo history
+        previous_region = session.pop_undo()
+        if previous_region is None:
+            return jsonify({
+                "facecam_region": None,
+                "can_undo": False,
+                "can_redo": len(session.redo_history) > 0,
+                "error": "Nothing to undo",
+            }), 400
+
+        # Push current region to redo history
+        session.push_redo(session.facecam_region)
+
+        # Restore previous region
+        session.facecam_region = previous_region
+        session.refresh_expiry()
+
+        return jsonify({
+            "facecam_region": {
+                "x": previous_region.x,
+                "y": previous_region.y,
+                "width": previous_region.width,
+                "height": previous_region.height,
+                "corner": previous_region.corner,
+                "confidence": previous_region.confidence,
+            },
+            "can_undo": len(session.undo_history) > 0,
+            "can_redo": len(session.redo_history) > 0,
+            "error": None,
+        }), 200
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in undo_adjustment_endpoint")
+        return jsonify({
+            "facecam_region": None,
+            "can_undo": False,
+            "can_redo": False,
+            "error": f"Internal error: {str(exc)}",
+        }), 500
+
+
+@app.route("/api/mini-editor/redo", methods=["POST"])
+def redo_adjustment_endpoint():
+    """Redo the last undone facecam region adjustment.
+
+    Pops from redo_history, pushes current region to undo_history,
+    and returns the reapplied facecam_region.
+
+    Request JSON:
+        {
+            "session_id": str           # Active editor session ID
+        }
+
+    Response JSON:
+        {
+            "facecam_region": {         # Reapplied placement (or null if nothing to redo)
+                "x": int,
+                "y": int,
+                "width": int,
+                "height": int,
+                "corner": str,
+                "confidence": float
+            } | null,
+            "can_undo": bool,           # True if undo is available
+            "can_redo": bool,           # True if more redo steps are available
+            "error": str | null
+        }
+    """
+    try:
+        data = request.get_json()
+    except Exception:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    try:
+        if data is None:
+            return jsonify({"error": "Request body must be JSON"}), 400
+
+        session_id = data.get("session_id")
+
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+
+        session = _session_store.get_session(session_id)
+        if session is None:
+            return jsonify({"error": f"Session not found or expired: {session_id}"}), 404
+
+        # Pop from redo history
+        next_region = session.pop_redo()
+        if next_region is None:
+            return jsonify({
+                "facecam_region": None,
+                "can_undo": len(session.undo_history) > 0,
+                "can_redo": False,
+                "error": "Nothing to redo",
+            }), 400
+
+        # Push current region to undo history (without clearing redo — we're redoing)
+        session.undo_history.append(session.facecam_region)
+
+        # Restore the redo region
+        session.facecam_region = next_region
+        session.refresh_expiry()
+
+        return jsonify({
+            "facecam_region": {
+                "x": next_region.x,
+                "y": next_region.y,
+                "width": next_region.width,
+                "height": next_region.height,
+                "corner": next_region.corner,
+                "confidence": next_region.confidence,
+            },
+            "can_undo": len(session.undo_history) > 0,
+            "can_redo": len(session.redo_history) > 0,
+            "error": None,
+        }), 200
+
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in redo_adjustment_endpoint")
+        return jsonify({
+            "facecam_region": None,
+            "can_undo": False,
+            "can_redo": False,
+            "error": f"Internal error: {str(exc)}",
+        }), 500
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -778,11 +2146,16 @@ def _job_detail(job: Job) -> dict:
             "score": c.get("score", ""),
             "thumbnail_url": f"/output/{thumbnail_name}" if thumbnail_name else None,
         })
+    # Signal to the frontend that vertical formatting is available
+    format_to_vertical_available = (
+        job.status == JobStatus.DONE and len(job.result_clips) > 0
+    )
     return {
         **_job_summary(job),
         "log_lines": job.log_lines,
         "clips": clips,
         "config_options": job.job_config_options,
+        "format_to_vertical_available": format_to_vertical_available,
     }
 
 

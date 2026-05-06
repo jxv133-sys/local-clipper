@@ -232,12 +232,12 @@ class VerticalFormattingJob:
     canvas_layout: CanvasLayout        # Layout to apply to all clips
     settings: dict[str, Any]           # User settings (backup, naming, etc.)
     clips: list[dict[str, Any]]        # List of clips: [{path, name, resolution}]
-    status: str                        # "queued" | "running" | "done" | "failed" | "cancelled"
+    output_dir: str = ""               # Directory where output files are saved
+    status: str = "queued"             # "queued" | "running" | "done" | "failed" | "cancelled"
     clips_processed: int = 0           # Number of clips successfully processed
     clips_total: int = field(default_factory=lambda: 0)  # Total clips to process
     current_clip: str = ""             # Name of clip currently being processed
     errors: list[str] = field(default_factory=list)  # Error messages
-    output_dir: str = ""               # Directory where output files are saved
     created_at: float = field(default_factory=time.time)  # Job creation timestamp
     started_at: float = 0.0            # When processing began
     completed_at: float = 0.0          # When processing finished

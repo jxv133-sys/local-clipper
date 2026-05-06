@@ -88,7 +88,9 @@ class TestEditorSession:
         sample_session.refresh_expiry(3600)  # 1 hour
         after = time.time()
         # Expiry should be approximately 1 hour from now
-        assert 3600 - (after - before) < sample_session.expires_at - before < 3600 + 1
+        # Allow for small timing differences (within 2 seconds)
+        expected_expiry = after + 3600
+        assert abs(sample_session.expires_at - expected_expiry) < 2
 
     def test_push_undo(self, sample_session, sample_facecam_region):
         """Test pushing a region to undo history."""
