@@ -1997,8 +1997,10 @@ loadSettings();
 startPolling();
 
 /* ================================================================
-   Vertical Formatting Editor
+   Vertical Formatting Editor - v2.1 (null-safe)
    ================================================================ */
+console.log('[Vertical Editor] Loading version 2.1 with null safety checks');
+
 let editorState = {
   sessionId: null,
   jobId: null,
@@ -2310,6 +2312,12 @@ async function generatePreview() {
     const val = parseInt(slider.value);
     valueEl.textContent = `${val} px`;
     
+    // Safety check - ensure facecamRegion exists
+    if (!editorState.facecamRegion) {
+      console.warn('Slider changed but facecamRegion is null');
+      return;
+    }
+    
     // Update facecam region
     const prop = id.replace('facecam-', '');
     editorState.facecamRegion[prop] = val;
@@ -2381,6 +2389,11 @@ async function undoAdjustment() {
     
     if (!res.ok) throw new Error(data.error || 'Undo failed');
     
+    // Safety check - backend might return null
+    if (!data.facecam_region) {
+      throw new Error('Undo returned null facecam region');
+    }
+    
     editorState.facecamRegion = data.facecam_region;
     editorState.canUndo = data.can_undo;
     editorState.canRedo = data.can_redo;
@@ -2409,6 +2422,11 @@ async function redoAdjustment() {
     const data = await res.json();
     
     if (!res.ok) throw new Error(data.error || 'Redo failed');
+    
+    // Safety check - backend might return null
+    if (!data.facecam_region) {
+      throw new Error('Redo returned null facecam region');
+    }
     
     editorState.facecamRegion = data.facecam_region;
     editorState.canUndo = data.can_undo;
