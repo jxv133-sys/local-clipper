@@ -2153,21 +2153,48 @@ async function detectFacecam() {
       return;
     }
     
-    // Update facecam region
-    editorState.facecamRegion = data.facecam_region;
+    // Check if facecam was detected
+    if (!data.facecam_region) {
+      // No facecam detected - use default region in top-right corner
+      const defaultWidth = Math.floor(editorState.sourceWidth * 0.4);
+      const defaultHeight = Math.floor(editorState.sourceHeight * 0.4);
+      editorState.facecamRegion = {
+        x: editorState.sourceWidth - defaultWidth - 10,
+        y: 10,
+        width: defaultWidth,
+        height: defaultHeight,
+        corner: 'top-right',
+        confidence: 0.0
+      };
+      
+      showEditorStatus(
+        'No facecam detected. Using default placement in top-right corner. Adjust manually as needed.',
+        'warning'
+      );
+    } else {
+      // Facecam detected successfully
+      editorState.facecamRegion = data.facecam_region;
+      const confidence = data.facecam_region.confidence || 0;
+      
+      showEditorStatus(
+        `Facecam detected with ${(confidence * 100).toFixed(0)}% confidence. Adjust if needed.`,
+        'success'
+      );
+      
+      // Show confidence badge
+      const confidenceBadge = document.getElementById('confidence-badge');
+      confidenceBadge.textContent = `Confidence: ${(confidence * 100).toFixed(0)}%`;
+      confidenceBadge.style.display = '';
+    }
+    
+    // Update UI with facecam region (detected or default)
     updateFacecamControls();
     updateFacecamBox();
-    
-    // Show confidence
-    const confidence = data.confidence || 0;
-    const confidenceBadge = document.getElementById('confidence-badge');
-    confidenceBadge.textContent = `Confidence: ${(confidence * 100).toFixed(0)}%`;
-    confidenceBadge.style.display = '';
     
     // Generate preview
     await generatePreview();
     
-    showEditorStatus(`Facecam detected with ${(confidence * 100).toFixed(0)}% confidence. Adjust if needed.`, 'success');
+    // Enable confirm button
     document.getElementById('confirm-btn').disabled = false;
     
   } catch (err) {
@@ -2179,6 +2206,12 @@ async function detectFacecam() {
 }
 
 function updateFacecamControls() {
+  // Safety check - ensure facecamRegion exists
+  if (!editorState.facecamRegion) {
+    console.warn('updateFacecamControls called with null facecamRegion');
+    return;
+  }
+  
   const { x, y, width, height } = editorState.facecamRegion;
   
   document.getElementById('facecam-x').value = x;
@@ -2193,6 +2226,12 @@ function updateFacecamControls() {
 }
 
 function updateFacecamBox() {
+  // Safety check - ensure facecamRegion exists
+  if (!editorState.facecamRegion) {
+    console.warn('updateFacecamBox called with null facecamRegion');
+    return;
+  }
+  
   const box = document.getElementById('facecam-box-horizontal');
   const canvas = document.getElementById('preview-horizontal-canvas');
   const container = canvas.parentElement;
