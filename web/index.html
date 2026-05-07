@@ -2256,13 +2256,21 @@ async function generatePreview() {
   const loading = document.getElementById('preview-vertical-loading');
   loading.style.display = '';
   
+  // Safety check
+  if (!editorState.facecamRegion) {
+    loading.textContent = 'No facecam region set';
+    return;
+  }
+  
   try {
     const res = await fetch('/api/mini-editor/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        session_id: editorState.sessionId,
+        clip_path: editorState.referenceClip,
         facecam_region: editorState.facecamRegion,
+        frame_width: editorState.sourceWidth,
+        frame_height: editorState.sourceHeight,
       }),
     });
     const data = await res.json();
