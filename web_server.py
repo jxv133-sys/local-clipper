@@ -1514,12 +1514,12 @@ def generate_preview_endpoint():
         preview_path = OUTPUT_DIR / preview_filename
         
         # Build FFmpeg filter for preview
-        # 1. Extract frame at 1 second
-        # 2. Build canvas filter for gameplay region
-        # 3. Crop and overlay facecam region
+        # 1. Create canvas with gameplay video scaled to bottom region
+        # 2. Crop facecam from source and scale it
+        # 3. Overlay facecam on top of canvas
         
         reformatter = FrameReformatter()
-        canvas_filter = reformatter.build_canvas_filter(
+        canvas_fragment = reformatter.build_canvas_filter(
             src_width=frame_width,
             src_height=frame_height,
             layout=canvas_layout,
@@ -1531,12 +1531,14 @@ def generate_preview_endpoint():
         facecam_scale = f"scale={canvas_layout.facecam_width}:{canvas_layout.facecam_height}"
         
         # Complete filter chain:
-        # [0:v] -> canvas filter -> [canvas]
-        # [0:v] -> crop facecam -> scale facecam -> [facecam]
-        # [canvas][facecam] -> overlay at (0, 0) -> scale to preview size -> output
+        # [0:v] -> split into two streams
+        # Stream 1: build canvas with gameplay in bottom region -> [canvas]
+        # Stream 2: crop and scale facecam -> [facecam]
+        # [canvas][facecam] -> overlay facecam on top -> scale to preview size -> output
         filter_complex = (
-            f"[0:v]{canvas_filter.filter_str.replace('[0:v]', '').replace('[canvas]', '')}[canvas];"
-            f"[0:v]{facecam_crop},{facecam_scale}[facecam];"
+            f"[0:v]split=2[v1][v2];"
+            f"[v1]scale={frame_width}:{frame_height},{canvas_fragment.filter_str.replace('[0:v]', '').replace('[canvas]', '')}[canvas];"
+            f"[v2]{facecam_crop},{facecam_scale}[facecam];"
             f"[canvas][facecam]overlay={canvas_layout.facecam_x}:{canvas_layout.facecam_y},"
             f"scale={preview_width}:{preview_height}[out]"
         )
