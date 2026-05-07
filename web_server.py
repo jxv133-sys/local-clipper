@@ -1447,6 +1447,9 @@ def generate_preview_endpoint():
         
         if cached_preview_path and os.path.exists(cached_preview_path):
             # Cache hit - return cached preview
+            _logger = logging.getLogger(__name__)
+            _logger.info(f"Preview cache HIT for {cache_key}")
+            
             # Build config to get canvas layout
             config_overrides = data.get("config", {})
             config = Config(work_dir=tempfile.gettempdir())
@@ -1477,6 +1480,9 @@ def generate_preview_endpoint():
             }), 200
         
         # Cache miss - generate preview
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Preview cache MISS for {cache_key} - generating new preview")
+        
         # Build config (use defaults, allow overrides)
         config_overrides = data.get("config", {})
         config = Config(work_dir=tempfile.gettempdir())
@@ -1535,6 +1541,11 @@ def generate_preview_endpoint():
         # We need just: "scale=W:H,pad=W:H:X:Y:black"
         canvas_ops = canvas_fragment.filter_str.replace('[0:v]', '').replace('[canvas]', '')
         
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Canvas fragment: {canvas_fragment.filter_str}")
+        _logger.info(f"Canvas ops extracted: {canvas_ops}")
+        _logger.info(f"Facecam crop: {facecam_crop}, scale: {facecam_scale}")
+        
         # Complete filter chain:
         # [0:v] -> split into two streams
         # Stream 1: build canvas with gameplay in bottom region -> [canvas]
@@ -1547,6 +1558,11 @@ def generate_preview_endpoint():
             f"[canvas][facecam]overlay={canvas_layout.facecam_x}:{canvas_layout.facecam_y},"
             f"scale={preview_width}:{preview_height}[out]"
         )
+        
+        # Debug logging
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Preview filter_complex: {filter_complex}")
+        _logger.info(f"Canvas layout: facecam=({canvas_layout.facecam_x},{canvas_layout.facecam_y},{canvas_layout.facecam_width}x{canvas_layout.facecam_height}), gameplay=({canvas_layout.gameplay_x},{canvas_layout.gameplay_y},{canvas_layout.gameplay_width}x{canvas_layout.gameplay_height})")
         
         # Run FFmpeg to generate preview image
         ffmpeg_cmd = [
