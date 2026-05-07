@@ -2243,8 +2243,10 @@ async function detectFacecam() {
     // Check if facecam was detected
     if (!data.facecam_region) {
       // No facecam detected - use default region in top-right corner
-      const defaultWidth = Math.floor(editorState.sourceWidth * 0.4);
-      const defaultHeight = Math.floor(editorState.sourceHeight * 0.4);
+      // Default to 20% of width and 20% of height = 4% area (minimum allowed)
+      // Use 25% to have some margin above minimum
+      const defaultWidth = Math.floor(editorState.sourceWidth * 0.25);
+      const defaultHeight = Math.floor(editorState.sourceHeight * 0.25);
       editorState.facecamRegion = {
         x: editorState.sourceWidth - defaultWidth - 10,
         y: 10,
@@ -2253,6 +2255,9 @@ async function detectFacecam() {
         corner: 'top-right',
         confidence: 0.0
       };
+      
+      console.log('[Detection] Using default facecam region:', editorState.facecamRegion);
+      console.log('[Detection] Default area fraction:', (defaultWidth * defaultHeight) / (editorState.sourceWidth * editorState.sourceHeight));
       
       showEditorStatus(
         'No facecam detected. Using default placement in top-right corner. Adjust manually as needed.',
@@ -2414,6 +2419,17 @@ async function generatePreview() {
     // Update facecam region
     const prop = id.replace('facecam-', '');
     editorState.facecamRegion[prop] = val;
+    
+    // Validate area fraction (must be >= 4% and <= 30%)
+    const area = editorState.facecamRegion.width * editorState.facecamRegion.height;
+    const frameArea = editorState.sourceWidth * editorState.sourceHeight;
+    const areaFraction = area / frameArea;
+    
+    if (areaFraction < 0.04) {
+      showEditorStatus(`Warning: Facecam region is too small (${(areaFraction * 100).toFixed(1)}%). Minimum is 4%.`, 'warning');
+    } else if (areaFraction > 0.30) {
+      showEditorStatus(`Warning: Facecam region is too large (${(areaFraction * 100).toFixed(1)}%). Maximum is 30%.`, 'warning');
+    }
     
     // Update box and preview (debounced)
     updateFacecamBox();
