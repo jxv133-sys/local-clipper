@@ -2420,6 +2420,26 @@ async function generatePreview() {
     const prop = id.replace('facecam-', '');
     editorState.facecamRegion[prop] = val;
     
+    // Enforce bounds - region must stay within frame
+    const { x, y, width, height } = editorState.facecamRegion;
+    
+    // Check if region extends beyond frame
+    if (x + width > editorState.sourceWidth) {
+      // Adjust width to fit
+      editorState.facecamRegion.width = editorState.sourceWidth - x;
+      document.getElementById('facecam-width').value = editorState.facecamRegion.width;
+      document.getElementById('facecam-width-value').textContent = `${editorState.facecamRegion.width} px`;
+      showEditorStatus('Width adjusted to fit within frame', 'warning');
+    }
+    
+    if (y + height > editorState.sourceHeight) {
+      // Adjust height to fit
+      editorState.facecamRegion.height = editorState.sourceHeight - y;
+      document.getElementById('facecam-height').value = editorState.facecamRegion.height;
+      document.getElementById('facecam-height-value').textContent = `${editorState.facecamRegion.height} px`;
+      showEditorStatus('Height adjusted to fit within frame', 'warning');
+    }
+    
     // Validate area fraction (must be >= 4% and <= 30%)
     const area = editorState.facecamRegion.width * editorState.facecamRegion.height;
     const frameArea = editorState.sourceWidth * editorState.sourceHeight;
