@@ -2014,19 +2014,24 @@ let editorState = {
 };
 
 async function openVerticalEditor(jobId) {
+  console.log('[Vertical Editor] Opening editor for job:', jobId);
   editorState.jobId = jobId;
   
   // Show overlay
   document.getElementById('vertical-editor-overlay').classList.add('open');
+  console.log('[Vertical Editor] Overlay opened');
   
   // Show loading status
   showEditorStatus('Loading clips...', 'info');
   
   try {
     // Get job details to find clip paths
+    console.log('[Vertical Editor] Fetching job details...');
     const res = await fetch(`/api/jobs/${jobId}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load job');
+    
+    console.log('[Vertical Editor] Job data:', data);
     
     if (!data.clips || data.clips.length === 0) {
       throw new Error('No clips found in this job');
@@ -2035,8 +2040,11 @@ async function openVerticalEditor(jobId) {
     // Extract clip paths from the job
     editorState.clipPaths = data.clips.map(c => c.path);
     editorState.referenceClip = editorState.clipPaths[0];
+    console.log('[Vertical Editor] Reference clip:', editorState.referenceClip);
+    console.log('[Vertical Editor] Total clips:', editorState.clipPaths.length);
     
     // Create editor session
+    console.log('[Vertical Editor] Creating session...');
     const sessionRes = await fetch('/api/mini-editor/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2048,6 +2056,7 @@ async function openVerticalEditor(jobId) {
     const sessionData = await sessionRes.json();
     if (!sessionRes.ok) throw new Error(sessionData.error || 'Failed to create session');
     
+    console.log('[Vertical Editor] Session created:', sessionData.session_id);
     console.log('[Vertical Editor] Backend version:', sessionData.version || 'unknown');
     
     editorState.sessionId = sessionData.session_id;
@@ -2055,9 +2064,11 @@ async function openVerticalEditor(jobId) {
     if (sessionData.reference_clip && sessionData.reference_clip.resolution) {
       editorState.sourceWidth = sessionData.reference_clip.resolution[0];
       editorState.sourceHeight = sessionData.reference_clip.resolution[1];
+      console.log('[Vertical Editor] Source resolution:', editorState.sourceWidth, 'x', editorState.sourceHeight);
     } else {
       editorState.sourceWidth = 1920;
       editorState.sourceHeight = 1080;
+      console.warn('[Vertical Editor] Using default resolution');
     }
     
     // Update slider ranges
@@ -2065,15 +2076,19 @@ async function openVerticalEditor(jobId) {
     document.getElementById('facecam-y').max = editorState.sourceHeight;
     document.getElementById('facecam-width').max = editorState.sourceWidth;
     document.getElementById('facecam-height').max = editorState.sourceHeight;
+    console.log('[Vertical Editor] Slider ranges updated');
     
     // Load reference clip into horizontal preview
+    console.log('[Vertical Editor] Loading horizontal preview...');
     await loadHorizontalPreview(editorState.referenceClip);
     
     // Auto-detect facecam
     showEditorStatus('Detecting facecam...', 'info');
+    console.log('[Vertical Editor] Starting facecam detection...');
     await detectFacecam();
     
   } catch (err) {
+    console.error('[Vertical Editor] Error:', err);
     showEditorStatus(`Error: ${err.message}`, 'error');
   }
 }
@@ -2105,24 +2120,92 @@ function closeVerticalEditor() {
 }
 
 async function loadHorizontalPreview(clipPath) {
+  console.log('[Horizontal Preview] Loading clip:', clipPath);
+  
   const canvas = document.getElementById('preview-horizontal-canvas');
   const ctx = canvas.getContext('2d');
   const loading = document.getElementById('preview-horizontal-loading');
   
-  loading.style.display = '';
+  if (!canvas) {
+    console.error('[Horizontal Preview] Canvas element not found!');
+    return;
+  }
   
-  // For now, just draw a placeholder
-  // In a full implementation, we'd load a video frame
+  if (!ctx) {
+    console.error('[Horizontal Preview] Could not get 2D context!');
+    return;
+  }
+  
+  loading.style.display = '';
+  loading.textContent = 'Loading video...';
+  
+  console.log('[Horizontal Preview] Canvas dimensions:', editorState.sourceWidth, 'x', editorState.sourceHeight);
+  
+  // Set canvas size
   canvas.width = editorState.sourceWidth;
   canvas.height = editorState.sourceHeight;
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#6c7086';
-  ctx.font = '24px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('Source Clip Preview', canvas.width / 2, canvas.height / 2);
   
-  loading.style.display = 'none';
+  try {
+    // Try to load actual video frame using a video element
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.preload = 'metadata';
+    
+    // Build the video URL (assuming clips are served from /output/)
+    const clipName = clipPath.split('/').pop();
+    const videoUrl = `/output/${clipName}`;
+    
+    console.log('[Horizontal Preview] Loading video from:', videoUrl);
+    
+    video.src = videoUrl;
+    
+    // Wait for video to load
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = () => {
+        console.log('[Horizontal Preview] Video metadata loaded:', video.videoWidth, 'x', video.videoHeight);
+        resolve();
+      };
+      video.onerror = (e) => {
+        console.error('[Horizontal Preview] Video load error:', e);
+        reject(new Error('Failed to load video'));
+      };
+      
+      // Timeout after 5 seconds
+      setTimeout(() => reject(new Error('Video load timeout')), 5000);
+    });
+    
+    // Seek to 1 second
+    video.currentTime = 1;
+    
+    // Wait for seek to complete
+    await new Promise((resolve) => {
+      video.onseeked = () => {
+        console.log('[Horizontal Preview] Seeked to 1 second');
+        resolve();
+      };
+    });
+    
+    // Draw video frame to canvas
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    console.log('[Horizontal Preview] Video frame drawn to canvas');
+    
+    loading.style.display = 'none';
+    
+  } catch (err) {
+    console.error('[Horizontal Preview] Error loading video:', err);
+    
+    // Fallback to placeholder
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#6c7086';
+    ctx.font = '24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Source Clip Preview', canvas.width / 2, canvas.height / 2);
+    ctx.font = '14px sans-serif';
+    ctx.fillText('(Could not load video frame)', canvas.width / 2, canvas.height / 2 + 30);
+    
+    loading.style.display = 'none';
+  }
 }
 
 async function detectFacecam() {
