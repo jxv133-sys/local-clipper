@@ -1530,6 +1530,11 @@ def generate_preview_endpoint():
         facecam_crop = f"crop={facecam_region.width}:{facecam_region.height}:{facecam_region.x}:{facecam_region.y}"
         facecam_scale = f"scale={canvas_layout.facecam_width}:{canvas_layout.facecam_height}"
         
+        # Extract the filter operations from canvas_fragment (remove labels)
+        # canvas_fragment.filter_str is like: "[0:v]scale=W:H,pad=W:H:X:Y:black[canvas]"
+        # We need just: "scale=W:H,pad=W:H:X:Y:black"
+        canvas_ops = canvas_fragment.filter_str.replace('[0:v]', '').replace('[canvas]', '')
+        
         # Complete filter chain:
         # [0:v] -> split into two streams
         # Stream 1: build canvas with gameplay in bottom region -> [canvas]
@@ -1537,7 +1542,7 @@ def generate_preview_endpoint():
         # [canvas][facecam] -> overlay facecam on top -> scale to preview size -> output
         filter_complex = (
             f"[0:v]split=2[v1][v2];"
-            f"[v1]scale={frame_width}:{frame_height},{canvas_fragment.filter_str.replace('[0:v]', '').replace('[canvas]', '')}[canvas];"
+            f"[v1]{canvas_ops}[canvas];"
             f"[v2]{facecam_crop},{facecam_scale}[facecam];"
             f"[canvas][facecam]overlay={canvas_layout.facecam_x}:{canvas_layout.facecam_y},"
             f"scale={preview_width}:{preview_height}[out]"
