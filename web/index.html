@@ -2047,8 +2047,14 @@ async function openVerticalEditor(jobId) {
     if (!sessionRes.ok) throw new Error(sessionData.error || 'Failed to create session');
     
     editorState.sessionId = sessionData.session_id;
-    editorState.sourceWidth = sessionData.source_width || 1920;
-    editorState.sourceHeight = sessionData.source_height || 1080;
+    // Extract resolution from reference_clip
+    if (sessionData.reference_clip && sessionData.reference_clip.resolution) {
+      editorState.sourceWidth = sessionData.reference_clip.resolution[0];
+      editorState.sourceHeight = sessionData.reference_clip.resolution[1];
+    } else {
+      editorState.sourceWidth = 1920;
+      editorState.sourceHeight = 1080;
+    }
     
     // Update slider ranges
     document.getElementById('facecam-x').max = editorState.sourceWidth;
@@ -2129,8 +2135,9 @@ async function detectFacecam() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        session_id: editorState.sessionId,
         clip_path: editorState.referenceClip,
+        frame_width: editorState.sourceWidth,
+        frame_height: editorState.sourceHeight,
       }),
     });
     const data = await res.json();
