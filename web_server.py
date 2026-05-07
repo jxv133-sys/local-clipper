@@ -1520,15 +1520,43 @@ def generate_preview_endpoint():
         preview_path = OUTPUT_DIR / preview_filename
         
         # Build FFmpeg filter for preview
-        # 1. Create canvas with gameplay video scaled to bottom region
-        # 2. Crop facecam from source and scale it
-        # 3. Overlay facecam on top of canvas
+        # For vertical shorts, we want to CROP the gameplay region to 9:16, not letterbox it
+        # 1. Crop the center of the source video to 9:16 aspect ratio for gameplay
+        # 2. Scale it to fit the gameplay region height
+        # 3. Pad to full canvas size with black (gameplay at bottom)
+        # 4. Crop and scale facecam from source
+        # 5. Overlay facecam on top
         
         reformatter = FrameReformatter()
-        canvas_fragment = reformatter.build_canvas_filter(
-            src_width=frame_width,
-            src_height=frame_height,
-            layout=canvas_layout,
+        
+        # Calculate crop dimensions for 9:16 gameplay region
+        # Target aspect ratio for gameplay: 9:16
+        gameplay_target_w = canvas_layout.gameplay_width
+        gameplay_target_h = canvas_layout.gameplay_height
+        gameplay_aspect = gameplay_target_w / gameplay_target_h  # 9/16 = 0.5625
+        
+        # Source aspect ratio
+        src_aspect = frame_width / frame_height
+        
+        # Crop source to match gameplay aspect ratio (9:16)
+        if src_aspect > gameplay_aspect:
+            # Source is wider - crop width
+            crop_h = frame_height
+            crop_w = round(frame_height * gameplay_aspect)
+            crop_x = (frame_width - crop_w) // 2  # Center horizontally
+            crop_y = 0
+        else:
+            # Source is taller - crop height
+            crop_w = frame_width
+            crop_h = round(frame_width / gameplay_aspect)
+            crop_x = 0
+            crop_y = (frame_height - crop_h) // 2  # Center vertically
+        
+        # Build gameplay filter: crop to 9:16, scale to gameplay region, pad to canvas
+        gameplay_filter = (
+            f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
+            f"scale={gameplay_target_w}:{gameplay_target_h},"
+            f"pad={canvas_layout.canvas_width}:{canvas_layout.canvas_height}:0:{canvas_layout.gameplay_y}:black"
         )
         
         # Build facecam crop and scale filter
@@ -1536,24 +1564,19 @@ def generate_preview_endpoint():
         facecam_crop = f"crop={facecam_region.width}:{facecam_region.height}:{facecam_region.x}:{facecam_region.y}"
         facecam_scale = f"scale={canvas_layout.facecam_width}:{canvas_layout.facecam_height}"
         
-        # Extract the filter operations from canvas_fragment (remove labels)
-        # canvas_fragment.filter_str is like: "[0:v]scale=W:H,pad=W:H:X:Y:black[canvas]"
-        # We need just: "scale=W:H,pad=W:H:X:Y:black"
-        canvas_ops = canvas_fragment.filter_str.replace('[0:v]', '').replace('[canvas]', '')
-        
         _logger = logging.getLogger(__name__)
-        _logger.info(f"Canvas fragment: {canvas_fragment.filter_str}")
-        _logger.info(f"Canvas ops extracted: {canvas_ops}")
+        _logger.info(f"Gameplay crop: {crop_w}x{crop_h} at ({crop_x},{crop_y}) from {frame_width}x{frame_height}")
+        _logger.info(f"Gameplay filter: {gameplay_filter}")
         _logger.info(f"Facecam crop: {facecam_crop}, scale: {facecam_scale}")
         
         # Complete filter chain:
         # [0:v] -> split into two streams
-        # Stream 1: build canvas with gameplay in bottom region -> [canvas]
+        # Stream 1: crop and build canvas with gameplay in bottom region -> [canvas]
         # Stream 2: crop and scale facecam -> [facecam]
         # [canvas][facecam] -> overlay facecam on top -> scale to preview size -> output
         filter_complex = (
             f"[0:v]split=2[v1][v2];"
-            f"[v1]{canvas_ops}[canvas];"
+            f"[v1]{gameplay_filter}[canvas];"
             f"[v2]{facecam_crop},{facecam_scale}[facecam];"
             f"[canvas][facecam]overlay={canvas_layout.facecam_x}:{canvas_layout.facecam_y},"
             f"scale={preview_width}:{preview_height}[out]"
