@@ -2031,7 +2031,7 @@ async function openVerticalEditor(jobId) {
     }
     
     // Extract clip paths from the job
-    editorState.clipPaths = data.clips.map(c => c.path || c.download_url);
+    editorState.clipPaths = data.clips.map(c => c.path);
     editorState.referenceClip = editorState.clipPaths[0];
     
     // Create editor session

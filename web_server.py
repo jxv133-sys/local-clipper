@@ -2145,6 +2145,7 @@ def _job_detail(job: Job) -> dict:
         clips.append({
             "index": i,
             "name": c["name"],
+            "path": c["path"],  # Add actual file path for mini-editor
             "download_url": f"/api/jobs/{job.job_id}/clips/{i}/download",
             "why_chosen": c.get("why_chosen", ""),
             "timestamp_range": c.get("timestamp_range", ""),
