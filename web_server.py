@@ -859,7 +859,8 @@ def create_mini_editor_session():
                 "name": str,
                 "resolution": [int, int]
             },
-            "error": str | null
+            "error": str | null,
+            "version": str                  # Backend version for debugging
         }
     """
     try:
@@ -1031,6 +1032,7 @@ def create_mini_editor_session():
             "clips": clips,
             "reference_clip": reference_clip,
             "error": None,
+            "version": "2.0-crop",  # Version identifier to verify server restart
         }), 201
         
     except Exception as exc:

@@ -2048,6 +2048,8 @@ async function openVerticalEditor(jobId) {
     const sessionData = await sessionRes.json();
     if (!sessionRes.ok) throw new Error(sessionData.error || 'Failed to create session');
     
+    console.log('[Vertical Editor] Backend version:', sessionData.version || 'unknown');
+    
     editorState.sessionId = sessionData.session_id;
     // Extract resolution from reference_clip
     if (sessionData.reference_clip && sessionData.reference_clip.resolution) {
