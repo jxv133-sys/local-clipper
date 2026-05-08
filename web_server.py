@@ -1725,33 +1725,43 @@ def confirm_placement_endpoint():
         # Validate facecam_region bounds against reference resolution
         frame_width, frame_height = session.reference_resolution
 
-        # Check region is within frame bounds
+        # Auto-clamp region to frame bounds instead of rejecting
+        # This allows users to confirm whatever they see in the preview
+        _logger = logging.getLogger(__name__)
+        
+        # Clamp negative positions to 0
         if facecam_region.x < 0:
-            return jsonify({"error": "facecam_region.x must be >= 0"}), 400
+            _logger.warning(f"Clamping facecam x from {facecam_region.x} to 0")
+            facecam_region.x = 0
         if facecam_region.y < 0:
-            return jsonify({"error": "facecam_region.y must be >= 0"}), 400
+            _logger.warning(f"Clamping facecam y from {facecam_region.y} to 0")
+            facecam_region.y = 0
+        
+        # Ensure width and height are positive
         if facecam_region.width <= 0:
             return jsonify({"error": "facecam_region.width must be > 0"}), 400
         if facecam_region.height <= 0:
             return jsonify({"error": "facecam_region.height must be > 0"}), 400
+        
+        # Clamp region to stay within frame bounds
         if facecam_region.x + facecam_region.width > frame_width:
-            return jsonify({
-                "error": (
-                    f"facecam_region extends beyond frame width: "
-                    f"x ({facecam_region.x}) + width ({facecam_region.width}) "
-                    f"> frame_width ({frame_width})"
-                )
-            }), 400
+            old_width = facecam_region.width
+            facecam_region.width = frame_width - facecam_region.x
+            _logger.warning(
+                f"Clamping facecam width from {old_width} to {facecam_region.width} "
+                f"to fit within frame (x={facecam_region.x}, frame_width={frame_width})"
+            )
+        
         if facecam_region.y + facecam_region.height > frame_height:
-            return jsonify({
-                "error": (
-                    f"facecam_region extends beyond frame height: "
-                    f"y ({facecam_region.y}) + height ({facecam_region.height}) "
-                    f"> frame_height ({frame_height})"
-                )
-            }), 400
+            old_height = facecam_region.height
+            facecam_region.height = frame_height - facecam_region.y
+            _logger.warning(
+                f"Clamping facecam height from {old_height} to {facecam_region.height} "
+                f"to fit within frame (y={facecam_region.y}, frame_height={frame_height})"
+            )
 
         # Validate area fraction (must be 4%–30% of frame area)
+        # Relax this to just a warning instead of rejection
         frame_area = frame_width * frame_height
         region_area = facecam_region.width * facecam_region.height
         area_fraction = region_area / frame_area
@@ -1761,19 +1771,15 @@ def confirm_placement_endpoint():
         max_fraction = config.facecam_max_area_fraction  # 0.30
 
         if area_fraction < min_fraction:
-            return jsonify({
-                "error": (
-                    f"facecam_region area fraction ({area_fraction:.3f}) is below "
-                    f"minimum ({min_fraction}). The facecam region is too small."
-                )
-            }), 400
+            _logger.warning(
+                f"Facecam area fraction ({area_fraction:.3f}) is below minimum ({min_fraction}), "
+                f"but allowing it anyway"
+            )
         if area_fraction > max_fraction:
-            return jsonify({
-                "error": (
-                    f"facecam_region area fraction ({area_fraction:.3f}) exceeds "
-                    f"maximum ({max_fraction}). The facecam region is too large."
-                )
-            }), 400
+            _logger.warning(
+                f"Facecam area fraction ({area_fraction:.3f}) exceeds maximum ({max_fraction}), "
+                f"but allowing it anyway"
+            )
 
         # Get the job to retrieve clips
         job = _get_job(session.clip_batch_id)
