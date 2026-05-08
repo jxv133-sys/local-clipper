@@ -711,6 +711,82 @@
     .format-vertical-btn:hover { opacity: 0.88; }
     .format-vertical-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    /* ── Formatting Progress UI ──────────────────────────────────── */
+    .formatting-progress-section {
+      padding: 20px;
+      border-top: 1px solid var(--border);
+      margin-top: 20px;
+    }
+
+    .progress-bar-container {
+      width: 100%;
+      height: 40px;
+      background: var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.5s ease, background 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .formatting-status {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: var(--bg);
+      border-radius: 5px;
+    }
+
+    .status-label {
+      font-size: 0.85rem;
+      color: var(--dim);
+      font-weight: 600;
+    }
+
+    .status-value {
+      font-size: 0.85rem;
+      color: var(--text);
+      font-family: "Cascadia Code", "Fira Code", monospace;
+    }
+
+    .formatting-errors {
+      margin-top: 16px;
+    }
+
+    .formatting-errors h4 {
+      font-size: 0.9rem;
+      margin-bottom: 8px;
+    }
+
+    .error-message {
+      background: rgba(243, 139, 168, 0.15);
+      color: var(--error);
+      padding: 8px 12px;
+      border-radius: 5px;
+      font-size: 0.8rem;
+      margin-bottom: 6px;
+      font-family: "Cascadia Code", "Fira Code", monospace;
+    }
+
     @media (max-width: 1200px) {
       .editor-body { grid-template-columns: 1fr; }
       .preview-vertical { max-height: 500px; }
@@ -1131,6 +1207,7 @@
 
           <!-- Action buttons -->
           <div class="editor-actions">
+            <button class="editor-btn editor-btn-secondary" id="skip-detect-btn" onclick="skipDetection()">⏭️ Skip & Place Manually</button>
             <button class="editor-btn editor-btn-secondary" id="detect-btn" onclick="detectFacecam()">🔍 Auto-Detect</button>
             <button class="editor-btn editor-btn-secondary" id="undo-btn" onclick="undoAdjustment()" disabled>↶ Undo</button>
             <button class="editor-btn editor-btn-secondary" id="redo-btn" onclick="redoAdjustment()" disabled>↷ Redo</button>
@@ -2253,23 +2330,27 @@ async function detectFacecam() {
         width: defaultWidth,
         height: defaultHeight,
         corner: 'top-right',
-        confidence: 0.0
+        confidence: 0.0,
+        isDefault: true  // Flag to indicate this is a default region
       };
       
       console.log('[Detection] Using default facecam region:', editorState.facecamRegion);
       console.log('[Detection] Default area fraction:', (defaultWidth * defaultHeight) / (editorState.sourceWidth * editorState.sourceHeight));
       
       showEditorStatus(
-        'No facecam detected. Using default placement in top-right corner. Adjust manually as needed.',
+        '⚠️ <strong>AUTO-DETECTION FAILED:</strong> No facecam found in the video.<br>' +
+        'A default region (orange box) has been placed in the top-right corner.<br>' +
+        '<strong>Action Required:</strong> Use the sliders below to adjust the position and size to match your video.',
         'warning'
       );
     } else {
       // Facecam detected successfully
       editorState.facecamRegion = data.facecam_region;
+      editorState.facecamRegion.isDefault = false;  // Mark as detected
       const confidence = data.facecam_region.confidence || 0;
       
       showEditorStatus(
-        `Facecam detected with ${(confidence * 100).toFixed(0)}% confidence. Adjust if needed.`,
+        `✅ Facecam detected with ${(confidence * 100).toFixed(0)}% confidence. Adjust if needed.`,
         'success'
       );
       
@@ -2295,6 +2376,38 @@ async function detectFacecam() {
   
   detectBtn.textContent = '🔍 Auto-Detect';
   detectBtn.disabled = false;
+}
+
+function skipDetection() {
+  console.log('[Skip Detection] User chose to place facecam manually');
+  
+  // Create default region without trying detection
+  const defaultWidth = Math.floor(editorState.sourceWidth * 0.25);
+  const defaultHeight = Math.floor(editorState.sourceHeight * 0.25);
+  
+  editorState.facecamRegion = {
+    x: editorState.sourceWidth - defaultWidth - 10,
+    y: 10,
+    width: defaultWidth,
+    height: defaultHeight,
+    corner: 'top-right',
+    confidence: 0.0,
+    isDefault: true
+  };
+  
+  console.log('[Skip Detection] Created manual placement region:', editorState.facecamRegion);
+  
+  updateFacecamControls();
+  updateFacecamBox();
+  generatePreview();
+  
+  document.getElementById('confirm-btn').disabled = false;
+  
+  showEditorStatus(
+    '📍 <strong>Manual Placement Mode:</strong> A default region has been placed in the top-right corner.<br>' +
+    'Use the sliders below to adjust the position and size to match your facecam.',
+    'info'
+  );
 }
 
 function updateFacecamControls() {
@@ -2333,13 +2446,22 @@ function updateFacecamBox() {
   const scaleY = container.clientHeight / editorState.sourceHeight;
   const scale = Math.min(scaleX, scaleY);
   
-  const { x, y, width, height } = editorState.facecamRegion;
+  const { x, y, width, height, isDefault } = editorState.facecamRegion;
   
   box.style.left = `${x * scale}px`;
   box.style.top = `${y * scale}px`;
   box.style.width = `${width * scale}px`;
   box.style.height = `${height * scale}px`;
   box.style.display = '';
+  
+  // Use different color for default vs detected regions
+  if (isDefault) {
+    box.style.borderColor = 'var(--warning)';  // Orange for default
+    box.style.boxShadow = '0 0 0 2px rgba(250, 179, 135, 0.3)';
+  } else {
+    box.style.borderColor = 'var(--accent)';  // Purple for detected
+    box.style.boxShadow = '0 0 0 2px rgba(124, 106, 247, 0.3)';
+  }
 }
 
 async function generatePreview() {
@@ -2465,9 +2587,9 @@ async function confirmPlacement() {
   
   const confirmBtn = document.getElementById('confirm-btn');
   confirmBtn.disabled = true;
-  confirmBtn.textContent = '⏳ Processing...';
+  confirmBtn.textContent = '⏳ Starting...';
   
-  showEditorStatus('Applying vertical formatting to all clips...', 'info');
+  showEditorStatus('Submitting vertical formatting job...', 'info');
   
   // Log what we're sending
   const area = editorState.facecamRegion.width * editorState.facecamRegion.height;
@@ -2499,22 +2621,233 @@ async function confirmPlacement() {
       throw new Error(data.error || 'Confirmation failed');
     }
     
-    showEditorStatus(
-      `Processing started! Job ID: ${data.job_id}. Check the job queue for progress.`,
-      'success'
-    );
+    // Store job ID
+    editorState.formattingJobId = data.job_id;
+    console.log('[Confirm] Formatting job created:', data.job_id);
     
-    // Close editor after 2 seconds
-    setTimeout(() => {
-      closeVerticalEditor();
-      // Refresh jobs to show the new formatting job
-      refreshJobs();
-    }, 2000);
+    // Hide controls, show progress UI
+    showFormattingProgressUI();
+    
+    // Start polling for progress
+    pollFormattingProgress(data.job_id);
     
   } catch (err) {
     showEditorStatus(`Error: ${err.message}`, 'error');
     confirmBtn.disabled = false;
     confirmBtn.textContent = '✓ Confirm & Process All Clips';
+  }
+}
+
+function showFormattingProgressUI() {
+  console.log('[Progress UI] Showing formatting progress section');
+  
+  // Hide controls section
+  const controlsSection = document.querySelector('.controls-section');
+  if (controlsSection) {
+    controlsSection.style.display = 'none';
+  }
+  
+  // Add progress section
+  const progressHTML = `
+    <div id="formatting-progress-section" class="formatting-progress-section">
+      <h3 style="text-align:center; color:var(--text); margin-bottom:20px;">
+        🎬 Processing Clips to Vertical Format
+      </h3>
+      
+      <div class="progress-bar-container">
+        <div id="formatting-progress-bar" class="progress-bar-fill">0%</div>
+      </div>
+      
+      <div class="formatting-status">
+        <div class="status-row">
+          <span class="status-label">Progress:</span>
+          <span id="formatting-clip-count" class="status-value">0 / 0 clips</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Current:</span>
+          <span id="formatting-current-clip" class="status-value">Starting...</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Time Remaining:</span>
+          <span id="formatting-eta" class="status-value">Calculating...</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Elapsed:</span>
+          <span id="formatting-elapsed" class="status-value">0s</span>
+        </div>
+      </div>
+      
+      <div id="formatting-errors" class="formatting-errors"></div>
+      
+      <div id="formatting-complete-actions" style="display:none; text-align:center; margin-top:20px;">
+        <button class="editor-btn editor-btn-primary" onclick="closeVerticalEditor(); refreshJobs();">
+          ✓ Done - Close Editor
+        </button>
+      </div>
+    </div>
+  `;
+  
+  const editorBody = document.querySelector('.editor-body');
+  if (editorBody) {
+    editorBody.insertAdjacentHTML('beforeend', progressHTML);
+  }
+}
+
+async function pollFormattingProgress(jobId) {
+  console.log('[Progress Poll] Starting polling for job:', jobId);
+  const pollInterval = 1000; // Poll every second
+  
+  const poll = async () => {
+    try {
+      const res = await fetch(`/api/mini-editor/job/${jobId}/progress`);
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to get progress');
+      }
+      
+      console.log('[Progress Poll] Status:', data.status, `(${data.clips_processed}/${data.clips_total})`);
+      
+      // Update progress UI
+      updateFormattingProgressUI(data);
+      
+      // Check if done
+      if (data.status === 'done' || data.status === 'failed' || data.status === 'cancelled') {
+        console.log('[Progress Poll] Job finished with status:', data.status);
+        handleFormattingComplete(data);
+        return; // Stop polling
+      }
+      
+      // Continue polling
+      setTimeout(poll, pollInterval);
+      
+    } catch (err) {
+      console.error('[Progress Poll] Error:', err);
+      showEditorStatus(`Progress error: ${err.message}`, 'error');
+      // Retry after delay
+      setTimeout(poll, pollInterval * 2);
+    }
+  };
+  
+  poll(); // Start polling
+}
+
+function updateFormattingProgressUI(data) {
+  // Update progress bar
+  const progressBar = document.getElementById('formatting-progress-bar');
+  if (progressBar) {
+    const progressPct = Math.round(data.progress_pct);
+    progressBar.style.width = `${progressPct}%`;
+    progressBar.textContent = `${progressPct}%`;
+  }
+  
+  // Update clip count
+  const clipCount = document.getElementById('formatting-clip-count');
+  if (clipCount) {
+    clipCount.textContent = `${data.clips_processed} / ${data.clips_total} clips`;
+  }
+  
+  // Update current clip
+  const currentClip = document.getElementById('formatting-current-clip');
+  if (currentClip) {
+    if (data.current_clip) {
+      currentClip.textContent = data.current_clip;
+    } else if (data.status === 'running') {
+      currentClip.textContent = 'Processing...';
+    } else if (data.status === 'queued') {
+      currentClip.textContent = 'Waiting to start...';
+    }
+  }
+  
+  // Update ETA
+  const eta = document.getElementById('formatting-eta');
+  if (eta) {
+    if (data.eta_seconds > 0) {
+      const minutes = Math.floor(data.eta_seconds / 60);
+      const seconds = Math.floor(data.eta_seconds % 60);
+      eta.textContent = `${minutes}m ${seconds}s`;
+    } else {
+      eta.textContent = 'Calculating...';
+    }
+  }
+  
+  // Update elapsed time
+  const elapsed = document.getElementById('formatting-elapsed');
+  if (elapsed) {
+    const elapsedSec = Math.floor(data.elapsed_seconds);
+    const elapsedMin = Math.floor(elapsedSec / 60);
+    const elapsedSecRem = elapsedSec % 60;
+    elapsed.textContent = `${elapsedMin}m ${elapsedSecRem}s`;
+  }
+  
+  // Show errors if any
+  if (data.errors && data.errors.length > 0) {
+    const errorsDiv = document.getElementById('formatting-errors');
+    if (errorsDiv) {
+      errorsDiv.innerHTML = '<h4 style="color:var(--error); margin-bottom:8px;">⚠️ Errors:</h4>' +
+        data.errors.map(err => 
+          `<div class="error-message">${esc(err)}</div>`
+        ).join('');
+    }
+  }
+}
+
+function handleFormattingComplete(data) {
+  console.log('[Progress Complete] Handling completion:', data.status);
+  
+  const progressBar = document.getElementById('formatting-progress-bar');
+  
+  if (data.status === 'done') {
+    if (progressBar) {
+      progressBar.style.background = 'var(--success)';
+      progressBar.style.width = '100%';
+      progressBar.textContent = '100%';
+    }
+    
+    showEditorStatus(
+      `✅ <strong>All clips processed successfully!</strong><br>` +
+      `${data.clips_processed} clips reformatted to vertical (9:16).<br>` +
+      `You can now download the clips from the results panel.`,
+      'success'
+    );
+    
+    // Show close button
+    const completeActions = document.getElementById('formatting-complete-actions');
+    if (completeActions) {
+      completeActions.style.display = '';
+    }
+    
+  } else if (data.status === 'failed') {
+    if (progressBar) {
+      progressBar.style.background = 'var(--error)';
+    }
+    
+    showEditorStatus(
+      `❌ <strong>Processing failed.</strong><br>` +
+      `${data.clips_processed} / ${data.clips_total} clips completed before failure.`,
+      'error'
+    );
+    
+    const completeActions = document.getElementById('formatting-complete-actions');
+    if (completeActions) {
+      completeActions.style.display = '';
+    }
+    
+  } else if (data.status === 'cancelled') {
+    if (progressBar) {
+      progressBar.style.background = 'var(--warning)';
+    }
+    
+    showEditorStatus(
+      `⚠️ <strong>Processing cancelled.</strong><br>` +
+      `${data.clips_processed} / ${data.clips_total} clips completed.`,
+      'warning'
+    );
+    
+    const completeActions = document.getElementById('formatting-complete-actions');
+    if (completeActions) {
+      completeActions.style.display = '';
+    }
   }
 }
 

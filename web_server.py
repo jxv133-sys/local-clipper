@@ -1994,6 +1994,52 @@ def get_formatting_job_progress(job_id: str):
         }), 500
 
 
+@app.route("/api/mini-editor/jobs", methods=["GET"])
+def list_formatting_jobs():
+    """Return all vertical formatting jobs ordered by creation time.
+    
+    Response JSON:
+        [
+            {
+                "job_id": str,
+                "status": str,
+                "clips_processed": int,
+                "clips_total": int,
+                "progress_pct": float,
+                "created_at": float,
+                "elapsed_seconds": float,
+                "eta_seconds": float,
+                "type": str,
+                "name": str
+            },
+            ...
+        ]
+    """
+    try:
+        with _formatting_jobs_lock:
+            jobs_snapshot = list(_formatting_jobs.values())
+        
+        jobs_snapshot.sort(key=lambda j: j.created_at, reverse=True)
+        
+        return jsonify([{
+            "job_id": j.job_id,
+            "status": j.status,
+            "clips_processed": j.clips_processed,
+            "clips_total": j.clips_total,
+            "progress_pct": j.get_progress_percentage(),
+            "created_at": j.created_at,
+            "elapsed_seconds": j.get_elapsed_time(),
+            "eta_seconds": j.estimate_remaining_time(),
+            "type": "formatting",
+            "name": f"Vertical Formatting ({j.clips_total} clips)",
+        } for j in jobs_snapshot]), 200
+        
+    except Exception as exc:
+        _logger = logging.getLogger(__name__)
+        _logger.exception("Error in list_formatting_jobs")
+        return jsonify({"error": f"Internal error: {str(exc)}"}), 500
+
+
 @app.route("/api/mini-editor/undo", methods=["POST"])
 def undo_adjustment_endpoint():
     """Undo the last facecam region adjustment.
