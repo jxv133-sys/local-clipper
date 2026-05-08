@@ -193,9 +193,9 @@ def test_property_11_filter_contains_canvas_and_facecam_and_overlay(region, conf
     assert "[canvas]" in filter_str, (
         f"Filter missing '[canvas]' label: {filter_str}"
     )
-    # Must contain facecam_scaled label
-    assert "[facecam_scaled]" in filter_str, (
-        f"Filter missing '[facecam_scaled]' label: {filter_str}"
+    # Must contain facecam label (updated from facecam_scaled)
+    assert "[facecam]" in filter_str, (
+        f"Filter missing '[facecam]' label: {filter_str}"
     )
     # Must contain overlay output label
     assert "[with_facecam]" in filter_str, (
@@ -539,9 +539,11 @@ def test_property_13_facecam_scale_fits_within_facecam_region(region, config):
     filter_str = _build_vertical_filter(src_w, src_h, region, layout)
 
     # Parse the facecam scale from the filter string
-    # Format: "...[0:v]crop=W:H:X:Y,scale=SW:SH[facecam_scaled]..."
-    facecam_part = filter_str.split("[facecam_scaled]")[0]
+    # New format: "...[v2]crop=W:H:X:Y,scale=SW:SH[facecam]..."
+    facecam_part = filter_str.split("[facecam]")[0]
+    # Extract the scale part after the last "scale=" before [facecam]
     scale_part = facecam_part.split("scale=")[-1]
+    # scale_part is now "SW:SH" (no additional text after)
     scale_w_str, scale_h_str = scale_part.split(":")
     scale_w = int(scale_w_str)
     scale_h = int(scale_h_str)
@@ -574,7 +576,8 @@ def test_property_13_facecam_scale_preserves_aspect_ratio(region, config):
     filter_str = _build_vertical_filter(src_w, src_h, region, layout)
 
     # Parse the facecam scale from the filter string
-    facecam_part = filter_str.split("[facecam_scaled]")[0]
+    # New format: "...[v2]crop=W:H:X:Y,scale=SW:SH[facecam]..."
+    facecam_part = filter_str.split("[facecam]")[0]
     scale_part = facecam_part.split("scale=")[-1]
     scale_w_str, scale_h_str = scale_part.split(":")
     scale_w = int(scale_w_str)

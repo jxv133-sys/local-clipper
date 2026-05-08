@@ -110,12 +110,15 @@ def _build_vertical_filter(
 ) -> str:
     """Build the complete FFmpeg filter_complex string for vertical formatting.
 
-    The filter chain:
-    1. ``[canvas]``: scale + pad the source to the full 9:16 canvas with the
-       gameplay region at the bottom (reuses FrameReformatter).
-    2. ``[facecam_scaled]``: crop the facecam from the source, scale to fit
-       the top region of the canvas while preserving aspect ratio.
-    3. ``[with_facecam]``: overlay the facecam on the canvas at (overlay_x, 0).
+    The filter chain uses CROP-BASED approach (not letterboxing):
+    1. Split input into two streams for parallel processing
+    2. Stream 1 (gameplay): Crop center of source to 9:16 aspect ratio,
+       scale to gameplay region, pad to full canvas with gameplay at bottom
+    3. Stream 2 (facecam): Crop facecam from source, scale to fit within
+       facecam region while preserving aspect ratio
+    4. Overlay facecam on canvas at specified position
+
+    This matches the preview endpoint logic to ensure WYSIWYG.
 
     Args:
         src_width:      Source video width in pixels.
@@ -126,39 +129,80 @@ def _build_vertical_filter(
     Returns:
         A filter_complex string suitable for ``ffmpeg -filter_complex``.
     """
-    reformatter = FrameReformatter()
-    canvas_fragment = reformatter.build_canvas_filter(src_width, src_height, layout)
-
-    # Facecam crop + scale
-    crop_w = facecam_region.width
-    crop_h = facecam_region.height
-    crop_x = facecam_region.x
-    crop_y = facecam_region.y
-
+    # Calculate crop dimensions for 9:16 gameplay region
+    # Target aspect ratio for gameplay: 9:16
+    gameplay_target_w = layout.gameplay_width
+    gameplay_target_h = layout.gameplay_height
+    gameplay_aspect = gameplay_target_w / gameplay_target_h  # 9/16 = 0.5625
+    
+    # Source aspect ratio
+    src_aspect = src_width / src_height
+    
+    # Crop source to match gameplay aspect ratio (9:16)
+    if src_aspect > gameplay_aspect:
+        # Source is wider - crop width (center horizontally)
+        crop_h = src_height
+        crop_w = round(src_height * gameplay_aspect)
+        crop_x = (src_width - crop_w) // 2
+        crop_y = 0
+    else:
+        # Source is taller - crop height (center vertically)
+        crop_w = src_width
+        crop_h = round(src_width / gameplay_aspect)
+        crop_x = 0
+        crop_y = (src_height - crop_h) // 2
+    
+    # Build gameplay filter: crop to 9:16, scale to gameplay region, pad to canvas
+    gameplay_filter = (
+        f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
+        f"scale={gameplay_target_w}:{gameplay_target_h},"
+        f"pad={layout.canvas_width}:{layout.canvas_height}:0:{layout.gameplay_y}:black"
+    )
+    
+    # Build facecam crop and scale filter
+    # Scale to fit within facecam region, preserving aspect ratio
     facecam_target_w = layout.facecam_width
     facecam_target_h = layout.facecam_height
-
-    # Scale to fit within facecam region, preserving aspect ratio
+    
+    crop_w = facecam_region.width
+    crop_h = facecam_region.height
+    
+    # Calculate scale dimensions to fit within target while preserving aspect ratio
     scale_w = facecam_target_w
     scale_h = round(crop_h * facecam_target_w / crop_w) if crop_w > 0 else facecam_target_h
-
+    
     if scale_h > facecam_target_h:
         scale_h = facecam_target_h
         scale_w = round(crop_w * facecam_target_h / crop_h) if crop_h > 0 else facecam_target_w
-
+    
     # Centre horizontally within the facecam region
-    overlay_x = (facecam_target_w - scale_w) // 2
-
-    # Build the complete filter_complex
-    # canvas_fragment.filter_str is e.g.:
-    #   "[0:v]scale=...,pad=...[canvas]"
+    overlay_x = layout.facecam_x + (facecam_target_w - scale_w) // 2
+    overlay_y = layout.facecam_y
+    
     facecam_filter = (
-        f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
-        f"scale={scale_w}:{scale_h}[facecam_scaled]"
+        f"crop={facecam_region.width}:{facecam_region.height}:{facecam_region.x}:{facecam_region.y},"
+        f"scale={scale_w}:{scale_h}"
     )
-    overlay_filter = f"[canvas][facecam_scaled]overlay={overlay_x}:0[with_facecam]"
-
-    return f"{canvas_fragment.filter_str};{facecam_filter};{overlay_filter}"
+    
+    # Log the filter details for debugging
+    logger.info(f"Gameplay crop: {crop_w}x{crop_h} at ({crop_x},{crop_y}) from {src_width}x{src_height}")
+    logger.info(f"Gameplay filter: {gameplay_filter}")
+    logger.info(f"Facecam filter: {facecam_filter}")
+    logger.info(f"Facecam overlay position: ({overlay_x},{overlay_y})")
+    
+    # Complete filter chain:
+    # [0:v] -> split into two streams
+    # Stream 1: crop and build canvas with gameplay in bottom region -> [canvas]
+    # Stream 2: crop and scale facecam -> [facecam]
+    # [canvas][facecam] -> overlay facecam on top -> output
+    filter_complex = (
+        f"[0:v]split=2[v1][v2];"
+        f"[v1]{gameplay_filter}[canvas];"
+        f"[v2]{facecam_filter}[facecam];"
+        f"[canvas][facecam]overlay={overlay_x}:{overlay_y}[with_facecam]"
+    )
+    
+    return filter_complex
 
 
 # ---------------------------------------------------------------------------
