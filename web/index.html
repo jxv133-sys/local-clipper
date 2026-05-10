@@ -1816,14 +1816,14 @@ function renderClips(clips, jobId) {
   
   // Format to Vertical button (appears at top of clips list)
   const formatVerticalBtn = `
-    <button class="format-vertical-btn" onclick="openVerticalEditor('${esc(jobId)}')">
+    <button class="format-vertical-btn" onclick="openVerticalEditor('${jobId}')">
       📱 Format to Vertical (9:16)
     </button>
   `;
   
   const downloadAllBtn = clips.length >= 2
     ? `<div style="margin-bottom:10px">
-        <button class="btn-sm btn-download" onclick="downloadAll('${esc(jobId)}')">⬇ Download All</button>
+        <button class="btn-sm btn-download" onclick="downloadAll('${jobId}')">⬇ Download All</button>
        </div>`
     : '';
   el.innerHTML = formatVerticalBtn + downloadAllBtn + clips.map((c, i) => `
@@ -1842,7 +1842,7 @@ function renderClips(clips, jobId) {
           ${c.shorts_download_url ? `<a href="${esc(c.shorts_download_url)}" download="${esc(c.shorts_name || '')}"><button class="btn-sm" style="background:var(--accent);color:#fff">📱 Shorts</button></a>` : ''}
           <button class="btn-sm btn-preview" onclick="togglePreview(${i}, '${esc(c.download_url)}')">▶ Preview</button>
           <button class="btn-sm btn-why" onclick="toggleWhy(${i})">📄 Why chosen</button>
-          <button class="btn-sm" style="background:var(--error);color:#fff" onclick="deleteClip('${esc(jobId)}', ${i})" title="Delete this clip">🗑️ Delete</button>
+          <button class="btn-sm" style="background:var(--error);color:#fff" onclick="deleteClip('${jobId}', ${i})" title="Delete this clip">🗑️ Delete</button>
         </div>
       </div>
       <div class="clip-preview" id="preview-${i}">

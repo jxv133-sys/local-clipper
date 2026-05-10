@@ -3,6 +3,31 @@
 ## Overview
 Added the ability to delete individual clips from the web UI after they've been rendered. This helps users manage their output and remove unwanted clips.
 
+## Bug Fix: Pattern Matching Error
+
+### Issue
+Users encountered "The string did not match the expected pattern" error when clicking the delete button.
+
+### Root Cause
+The `esc()` function was escaping the `jobId` in the onclick handler:
+```javascript
+onclick="deleteClip('${esc(jobId)}', ${i})"
+```
+
+The `esc()` function converts characters like `&` to `&amp;`, which is correct for HTML content but breaks JavaScript strings in onclick attributes. When jobIds contain special characters, the escaped version doesn't match the Flask route pattern.
+
+### Solution
+Removed `esc()` from jobId in onclick handlers since jobIds are already safe JavaScript strings:
+```javascript
+onclick="deleteClip('${jobId}', ${i})"
+```
+
+Also fixed the same issue in:
+- `openVerticalEditor('${jobId}')` 
+- `downloadAll('${jobId}')`
+
+The `esc()` function is still used for user-facing content like clip names, URLs, and text that gets rendered as HTML.
+
 ## Features
 
 ### Delete Button
