@@ -88,7 +88,13 @@ def trim_clip_silence(clip_path: str, config: Config, clip_rank: int = 0) -> str
 def _extract_single_clip(config: Config, clip: Clip, video_path: str) -> tuple[int, str]:
     """Extract a single clip and return ``(clip.rank, output_path)``."""
     t0 = time.time()
-    filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
+    
+    # Use special naming for audio spike clips (bypassed LLM scoring)
+    if clip.is_audio_spike:
+        filename = f"volume_spike_{clip.rank}_{int(clip.start)}s.mp4"
+    else:
+        filename = f"clip_{clip.rank}_{int(clip.start)}s.mp4"
+    
     output_path = os.path.join(config.output_dir, filename)
     requested_duration = clip.end - clip.start
 
