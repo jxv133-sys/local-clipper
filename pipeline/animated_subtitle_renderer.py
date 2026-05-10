@@ -178,46 +178,48 @@ def _build_word_by_word_line(
     parts = [f"{{\\an2\\pos({cx},{subtitle_y})}}"]
     
     if style == SubtitleStyle.BUBBLE:
-        # Bubble: Scale pop on each word as it's highlighted
+        # Bubble: Each word appears, scales up when highlighted, then disappears
         for word, word_start, word_end in words_with_timing:
             escaped_word = escape_ass_text(word.upper().strip())
             # Calculate timing relative to entry start (in centiseconds)
             start_cs = round((word_start - entry.start) * 100)
             end_cs = round((word_end - entry.start) * 100)
             
-            # Word starts dimmed, scales up when highlighted, then dims again
+            # Word starts invisible, appears and scales up when spoken, then disappears
             parts.append(
-                f"{{\\1c{primary_color}\\alpha&H80&"  # Start dimmed
-                f"\\t({start_cs},{start_cs + 50},\\1c{highlight_color}\\alpha&H00&\\fscx110\\fscy110)"  # Highlight + scale
-                f"\\t({end_cs - 50},{end_cs},\\1c{primary_color}\\alpha&H80&\\fscx100\\fscy100)}}"  # Dim again
+                f"{{\\alpha&HFF&"  # Start invisible
+                f"\\t({start_cs},{start_cs + 50},\\1c{highlight_color}\\alpha&H00&\\fscx110\\fscy110)"  # Appear + highlight + scale
+                f"\\t({end_cs},{end_cs + 50},\\alpha&HFF&)}}"  # Disappear
                 f"{escaped_word} "
             )
     
     elif style == SubtitleStyle.POPUP:
-        # Popup: Each word pops in as it's spoken
-        for word, word_start, word_end in words_with_timing:
-            escaped_word = escape_ass_text(word.upper().strip())
-            start_cs = round((word_start - entry.start) * 100)
-            
-            # Word starts invisible, pops in when spoken
-            parts.append(
-                f"{{\\alpha&HFF&"  # Start invisible
-                f"\\t({start_cs},{start_cs + 80},\\alpha&H00&\\fscx100\\fscy100)}}"  # Pop in
-                f"{escaped_word} "
-            )
-    
-    elif style == SubtitleStyle.HIGHLIGHT:
-        # Highlight: Background color changes for each word
+        # Popup: Each word pops in as it's spoken, then disappears
         for word, word_start, word_end in words_with_timing:
             escaped_word = escape_ass_text(word.upper().strip())
             start_cs = round((word_start - entry.start) * 100)
             end_cs = round((word_end - entry.start) * 100)
             
-            # Word starts normal, gets highlighted background, then normal again
+            # Word starts invisible, pops in when spoken, then disappears
             parts.append(
-                f"{{\\1c{primary_color}"
-                f"\\t({start_cs},{start_cs + 50},\\1c{highlight_color}\\bord6)"  # Highlight
-                f"\\t({end_cs - 50},{end_cs},\\1c{primary_color}\\bord4)}}"  # Normal
+                f"{{\\alpha&HFF&"  # Start invisible
+                f"\\t({start_cs},{start_cs + 80},\\alpha&H00&\\fscx100\\fscy100)"  # Pop in
+                f"\\t({end_cs},{end_cs + 50},\\alpha&HFF&)}}"  # Disappear
+                f"{escaped_word} "
+            )
+    
+    elif style == SubtitleStyle.HIGHLIGHT:
+        # Highlight: Each word appears with highlighted background, then disappears
+        for word, word_start, word_end in words_with_timing:
+            escaped_word = escape_ass_text(word.upper().strip())
+            start_cs = round((word_start - entry.start) * 100)
+            end_cs = round((word_end - entry.start) * 100)
+            
+            # Word starts invisible, appears with highlight, then disappears
+            parts.append(
+                f"{{\\alpha&HFF&"  # Start invisible
+                f"\\t({start_cs},{start_cs + 50},\\1c{highlight_color}\\alpha&H00&\\bord6)"  # Appear + highlight
+                f"\\t({end_cs},{end_cs + 50},\\alpha&HFF&)}}"  # Disappear
                 f"{escaped_word} "
             )
     
