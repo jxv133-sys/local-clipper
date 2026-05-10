@@ -126,7 +126,102 @@ def _build_ass_header(
 
 
 # ---------------------------------------------------------------------------
-# Karaoke line builder
+# Word-by-word highlighting builder (TikTok style)
+# ---------------------------------------------------------------------------
+
+def _build_word_by_word_line(
+    entry: SRTEntry,
+    cx: int,
+    subtitle_y: int,
+    style: SubtitleStyle,
+    config,
+) -> str:
+    """Build an ASS Dialogue text with word-by-word highlighting (TikTok style).
+
+    All words in the group are shown at once, but each word is highlighted
+    individually as it's spoken using ASS animation tags.
+
+    Args:
+        entry:      SRTEntry with start/end times and text.
+        cx:         Horizontal centre position in pixels.
+        subtitle_y: Vertical position in pixels.
+        style:      SubtitleStyle enum value.
+        config:     Config object with subtitle settings.
+
+    Returns:
+        ASS override + text string for the Dialogue line's Text field.
+    """
+    words = entry.text.upper().split()
+    if not words:
+        return f"{{\\an2\\pos({cx},{subtitle_y})}}"
+
+    total_cs = round((entry.end - entry.start) * 100)
+    word_cs = round(total_cs / max(len(words), 1))
+
+    # Get colors for highlighting
+    primary_color = getattr(config, "subtitle_primary_color", "&H00FFFFFF")  # White
+    highlight_color = getattr(config, "subtitle_highlight_color", "&H0000FFFF")  # Yellow
+
+    parts = [f"{{\\an2\\pos({cx},{subtitle_y})}}"]
+    
+    if style == SubtitleStyle.BUBBLE:
+        # Bubble: Scale pop on each word as it's highlighted
+        for i, word in enumerate(words):
+            escaped_word = escape_ass_text(word)
+            start_time = i * word_cs
+            end_time = (i + 1) * word_cs
+            
+            # Word starts dimmed, scales up when highlighted, then dims again
+            parts.append(
+                f"{{\\1c{primary_color}\\alpha&H80&"  # Start dimmed
+                f"\\t({start_time},{start_time + 50},\\1c{highlight_color}\\alpha&H00&\\fscx110\\fscy110)"  # Highlight + scale
+                f"\\t({end_time - 50},{end_time},\\1c{primary_color}\\alpha&H80&\\fscx100\\fscy100)}}"  # Dim again
+                f"{escaped_word} "
+            )
+    
+    elif style == SubtitleStyle.POPUP:
+        # Popup: Each word pops in as it's spoken
+        for i, word in enumerate(words):
+            escaped_word = escape_ass_text(word)
+            start_time = i * word_cs
+            
+            # Word starts invisible, pops in when spoken
+            parts.append(
+                f"{{\\alpha&HFF&"  # Start invisible
+                f"\\t({start_time},{start_time + 80},\\alpha&H00&\\fscx100\\fscy100)}}"  # Pop in
+                f"{escaped_word} "
+            )
+    
+    elif style == SubtitleStyle.HIGHLIGHT:
+        # Highlight: Background color changes for each word
+        for i, word in enumerate(words):
+            escaped_word = escape_ass_text(word)
+            start_time = i * word_cs
+            end_time = (i + 1) * word_cs
+            
+            # Word starts normal, gets highlighted background, then normal again
+            parts.append(
+                f"{{\\1c{primary_color}"
+                f"\\t({start_time},{start_time + 50},\\1c{highlight_color}\\bord6)"  # Highlight
+                f"\\t({end_time - 50},{end_time},\\1c{primary_color}\\bord4)}}"  # Normal
+                f"{escaped_word} "
+            )
+    
+    elif style == SubtitleStyle.KARAOKE:
+        # Karaoke: Use native \k tags for color change
+        for i, word in enumerate(words):
+            escaped_word = escape_ass_text(word)
+            if i < len(words) - 1:
+                parts.append(f"{{\\k{word_cs}}}{escaped_word} ")
+            else:
+                parts.append(f"{{\\k{word_cs}}}{escaped_word}")
+        return "".join(parts)
+    
+    return "".join(parts).rstrip()
+
+
+# ---------------------------------------------------------------------------
+# Karaoke line builder (legacy - now handled by _build_word_by_word_line)
 # ---------------------------------------------------------------------------
 
 def _build_karaoke_line(
@@ -248,46 +343,9 @@ class AnimatedSubtitleRenderer:
             upper_text = entry.text.upper()
             escaped_text = escape_ass_text(upper_text)
 
-            # --- Build style-specific text ---
-            if style == SubtitleStyle.BUBBLE:
-                # Task 5.3: Bold thick outline with scale-pop animation
-                # Scale from 110% → 100% over 80ms on entry
-                text = (
-                    f"{{\\an2\\pos({cx},{subtitle_y})"
-                    f"\\fscx110\\fscy110"
-                    f"\\t(0,80,\\fscx100\\fscy100)}}"
-                    f"{escaped_text}"
-                )
-
-            elif style == SubtitleStyle.POPUP:
-                # Task 5.4: Fade-in + scale-in from 0% → 100% over 100ms
-                text = (
-                    f"{{\\an2\\pos({cx},{subtitle_y})"
-                    f"\\fad(80,0)"
-                    f"\\fscx0\\fscy0"
-                    f"\\t(0,100,\\fscx100\\fscy100)}}"
-                    f"{escaped_text}"
-                )
-
-            elif style == SubtitleStyle.HIGHLIGHT:
-                # Task 5.5: Active word group with highlight colour and border box
-                highlight_color = getattr(
-                    config, "subtitle_highlight_color", "&H0000FFFF"
-                )
-                text = (
-                    f"{{\\an2\\pos({cx},{subtitle_y})"
-                    f"\\3c{highlight_color}"
-                    f"\\bord6}}"
-                    f"{escaped_text}"
-                )
-
-            elif style == SubtitleStyle.KARAOKE:
-                # Task 5.6: Word-by-word colour change using \k timing tags
-                text = _build_karaoke_line(entry, cx, subtitle_y)
-
-            else:
-                # Fallback: plain positioned text
-                text = f"{{\\an2\\pos({cx},{subtitle_y})}}{escaped_text}"
+            # --- Build style-specific text with word-by-word highlighting ---
+            # Use the new TikTok-style word-by-word highlighting for all styles
+            text = _build_word_by_word_line(entry, cx, subtitle_y, style, config)
 
             dialogue_line = (
                 f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}"
