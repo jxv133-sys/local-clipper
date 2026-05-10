@@ -97,6 +97,7 @@ class SRTEntry:
     start: float   # seconds, relative to clip start
     end: float     # seconds, relative to clip start
     text: str
+    word_timings: list[tuple[str, float, float]] | None = None  # [(word, start, end), ...] for word-by-word highlighting
 
 
 @dataclass

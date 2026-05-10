@@ -131,7 +131,20 @@ def _word_level_entries(seg, clip_start: float, start_index: int) -> list[SRTEnt
         if group_text:
             rel_start = max(0.0, group[0].start - clip_start)
             rel_end = max(0.0, group[-1].end - clip_start)
-            entries.append(SRTEntry(index=idx, start=rel_start, end=rel_end, text=group_text))
+            # Include individual word timings for word-by-word highlighting
+            word_timings = [
+                (w.word.strip(), max(0.0, w.start - clip_start), max(0.0, w.end - clip_start))
+                for w in group
+            ]
+            entries.append(
+                SRTEntry(
+                    index=idx,
+                    start=rel_start,
+                    end=rel_end,
+                    text=group_text,
+                    word_timings=word_timings,
+                )
+            )
             idx += 1
         i += _WORDS_PER_GROUP
     return entries

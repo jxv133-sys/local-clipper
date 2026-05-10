@@ -139,10 +139,10 @@ def _build_word_by_word_line(
     """Build an ASS Dialogue text with word-by-word highlighting (TikTok style).
 
     All words in the group are shown at once, but each word is highlighted
-    individually as it's spoken using ASS animation tags.
+    individually as it's spoken using ASS animation tags with actual word timings.
 
     Args:
-        entry:      SRTEntry with start/end times and text.
+        entry:      SRTEntry with start/end times, text, and optional word_timings.
         cx:         Horizontal centre position in pixels.
         subtitle_y: Vertical position in pixels.
         style:      SubtitleStyle enum value.
@@ -151,12 +151,25 @@ def _build_word_by_word_line(
     Returns:
         ASS override + text string for the Dialogue line's Text field.
     """
-    words = entry.text.upper().split()
-    if not words:
-        return f"{{\\an2\\pos({cx},{subtitle_y})}}"
+    # If we have word-level timings, use them for precise highlighting
+    if entry.word_timings:
+        words_with_timing = entry.word_timings
+    else:
+        # Fallback: split text and divide duration equally
+        words = entry.text.upper().split()
+        if not words:
+            return f"{{\\an2\\pos({cx},{subtitle_y})}}"
+        
+        total_cs = round((entry.end - entry.start) * 100)
+        word_cs = round(total_cs / max(len(words), 1))
+        
+        words_with_timing = [
+            (word, entry.start + (i * word_cs / 100), entry.start + ((i + 1) * word_cs / 100))
+            for i, word in enumerate(words)
+        ]
 
-    total_cs = round((entry.end - entry.start) * 100)
-    word_cs = round(total_cs / max(len(words), 1))
+    if not words_with_timing:
+        return f"{{\\an2\\pos({cx},{subtitle_y})}}"
 
     # Get colors for highlighting
     primary_color = getattr(config, "subtitle_primary_color", "&H00FFFFFF")  # White
@@ -166,56 +179,59 @@ def _build_word_by_word_line(
     
     if style == SubtitleStyle.BUBBLE:
         # Bubble: Scale pop on each word as it's highlighted
-        for i, word in enumerate(words):
-            escaped_word = escape_ass_text(word)
-            start_time = i * word_cs
-            end_time = (i + 1) * word_cs
+        for word, word_start, word_end in words_with_timing:
+            escaped_word = escape_ass_text(word.upper().strip())
+            # Calculate timing relative to entry start (in centiseconds)
+            start_cs = round((word_start - entry.start) * 100)
+            end_cs = round((word_end - entry.start) * 100)
             
             # Word starts dimmed, scales up when highlighted, then dims again
             parts.append(
                 f"{{\\1c{primary_color}\\alpha&H80&"  # Start dimmed
-                f"\\t({start_time},{start_time + 50},\\1c{highlight_color}\\alpha&H00&\\fscx110\\fscy110)"  # Highlight + scale
-                f"\\t({end_time - 50},{end_time},\\1c{primary_color}\\alpha&H80&\\fscx100\\fscy100)}}"  # Dim again
+                f"\\t({start_cs},{start_cs + 50},\\1c{highlight_color}\\alpha&H00&\\fscx110\\fscy110)"  # Highlight + scale
+                f"\\t({end_cs - 50},{end_cs},\\1c{primary_color}\\alpha&H80&\\fscx100\\fscy100)}}"  # Dim again
                 f"{escaped_word} "
             )
     
     elif style == SubtitleStyle.POPUP:
         # Popup: Each word pops in as it's spoken
-        for i, word in enumerate(words):
-            escaped_word = escape_ass_text(word)
-            start_time = i * word_cs
+        for word, word_start, word_end in words_with_timing:
+            escaped_word = escape_ass_text(word.upper().strip())
+            start_cs = round((word_start - entry.start) * 100)
             
             # Word starts invisible, pops in when spoken
             parts.append(
                 f"{{\\alpha&HFF&"  # Start invisible
-                f"\\t({start_time},{start_time + 80},\\alpha&H00&\\fscx100\\fscy100)}}"  # Pop in
+                f"\\t({start_cs},{start_cs + 80},\\alpha&H00&\\fscx100\\fscy100)}}"  # Pop in
                 f"{escaped_word} "
             )
     
     elif style == SubtitleStyle.HIGHLIGHT:
         # Highlight: Background color changes for each word
-        for i, word in enumerate(words):
-            escaped_word = escape_ass_text(word)
-            start_time = i * word_cs
-            end_time = (i + 1) * word_cs
+        for word, word_start, word_end in words_with_timing:
+            escaped_word = escape_ass_text(word.upper().strip())
+            start_cs = round((word_start - entry.start) * 100)
+            end_cs = round((word_end - entry.start) * 100)
             
             # Word starts normal, gets highlighted background, then normal again
             parts.append(
                 f"{{\\1c{primary_color}"
-                f"\\t({start_time},{start_time + 50},\\1c{highlight_color}\\bord6)"  # Highlight
-                f"\\t({end_time - 50},{end_time},\\1c{primary_color}\\bord4)}}"  # Normal
+                f"\\t({start_cs},{start_cs + 50},\\1c{highlight_color}\\bord6)"  # Highlight
+                f"\\t({end_cs - 50},{end_cs},\\1c{primary_color}\\bord4)}}"  # Normal
                 f"{escaped_word} "
             )
     
     elif style == SubtitleStyle.KARAOKE:
-        # Karaoke: Use native \k tags for color change
-        for i, word in enumerate(words):
-            escaped_word = escape_ass_text(word)
-            if i < len(words) - 1:
-                parts.append(f"{{\\k{word_cs}}}{escaped_word} ")
+        # Karaoke: Use native \k tags for color change with actual word durations
+        for i, (word, word_start, word_end) in enumerate(words_with_timing):
+            escaped_word = escape_ass_text(word.upper().strip())
+            # Calculate word duration in centiseconds
+            word_duration_cs = round((word_end - word_start) * 100)
+            if i < len(words_with_timing) - 1:
+                parts.append(f"{{\\k{word_duration_cs}}}{escaped_word} ")
             else:
-                parts.append(f"{{\\k{word_cs}}}{escaped_word}")
-        return "".join(parts)
+                parts.append(f"{{\\k{word_duration_cs}}}{escaped_word}")
+        return "".join(parts).rstrip()
     
     return "".join(parts).rstrip()
 
@@ -272,7 +288,7 @@ class AnimatedSubtitleRenderer:
     - Convert SRTEntry list to ASS format with animation override tags.
     - Support four visual styles: BUBBLE, POPUP, HIGHLIGHT, KARAOKE.
     - Position subtitles in the lower portion of the gameplay region.
-    - Apply word-level timing for the KARAOKE style.
+    - Apply word-level timing using actual word timestamps from transcript.
     - Skip invalid entries (start >= end or negative timestamps) with a warning.
     - Escape special characters in subtitle text.
     """
@@ -293,6 +309,7 @@ class AnimatedSubtitleRenderer:
         - Converts start/end times to centiseconds.
         - Uppercases and escapes the text.
         - Builds a Dialogue line with style-specific ASS override tags.
+        - Uses word-level timings if available for precise highlighting.
 
         Invalid entries (start >= end or negative timestamps) are skipped with
         a WARNING log message.
@@ -344,7 +361,7 @@ class AnimatedSubtitleRenderer:
             escaped_text = escape_ass_text(upper_text)
 
             # --- Build style-specific text with word-by-word highlighting ---
-            # Use the new TikTok-style word-by-word highlighting for all styles
+            # Use TikTok-style word-by-word highlighting with actual word timings
             text = _build_word_by_word_line(entry, cx, subtitle_y, style, config)
 
             dialogue_line = (
