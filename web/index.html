@@ -1827,7 +1827,7 @@ function renderClips(clips, jobId) {
        </div>`
     : '';
   el.innerHTML = formatVerticalBtn + downloadAllBtn + clips.map((c, i) => `
-    <div class="clip-card">
+    <div class="clip-card" id="clip-card-${i}">
       <div class="clip-card-header" onclick="toggleWhy(${i})">
         <div class="clip-rank">${i + 1}</div>
         <div class="clip-info">
@@ -1842,6 +1842,7 @@ function renderClips(clips, jobId) {
           ${c.shorts_download_url ? `<a href="${esc(c.shorts_download_url)}" download="${esc(c.shorts_name || '')}"><button class="btn-sm" style="background:var(--accent);color:#fff">📱 Shorts</button></a>` : ''}
           <button class="btn-sm btn-preview" onclick="togglePreview(${i}, '${esc(c.download_url)}')">▶ Preview</button>
           <button class="btn-sm btn-why" onclick="toggleWhy(${i})">📄 Why chosen</button>
+          <button class="btn-sm" style="background:var(--error);color:#fff" onclick="deleteClip('${esc(jobId)}', ${i})" title="Delete this clip">🗑️ Delete</button>
         </div>
       </div>
       <div class="clip-preview" id="preview-${i}">
@@ -1892,6 +1893,48 @@ function togglePreview(i, url) {
    ================================================================ */
 function downloadAll(jobId) {
   window.location.href = `/api/jobs/${jobId}/download-all`;
+}
+
+/* ================================================================
+   Delete a specific clip
+   ================================================================ */
+async function deleteClip(jobId, clipIndex) {
+  if (!confirm('Delete this clip? This will permanently remove the clip file and all associated files (subtitles, report, thumbnail).')) return;
+  
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/clips/${clipIndex}/delete`, { 
+      method: 'DELETE' 
+    });
+    const data = await res.json();
+    
+    if (!res.ok) throw new Error(data.error || 'Delete failed');
+    
+    // Remove the clip card from the UI with animation
+    const clipCard = document.getElementById(`clip-card-${clipIndex}`);
+    if (clipCard) {
+      clipCard.style.transition = 'opacity 0.3s, transform 0.3s';
+      clipCard.style.opacity = '0';
+      clipCard.style.transform = 'scale(0.9)';
+      setTimeout(() => {
+        // Refresh the clips list to update indices
+        selectJob(jobId);
+      }, 300);
+    } else {
+      // Fallback: refresh immediately
+      selectJob(jobId);
+    }
+    
+    // Show success message
+    if (data.deleted_files && data.deleted_files.length > 0) {
+      console.log('Deleted files:', data.deleted_files);
+    }
+    if (data.errors && data.errors.length > 0) {
+      console.warn('Errors during deletion:', data.errors);
+    }
+    
+  } catch (err) {
+    alert('Delete error: ' + err.message);
+  }
 }
 
 /* ================================================================

@@ -793,6 +793,75 @@ def cancel_job(job_id: str):
     return jsonify({"job_id": job_id, "status": "cancelling"}), 200
 
 
+@app.route("/api/jobs/<job_id>/clips/<int:clip_index>/delete", methods=["DELETE", "POST"])
+def delete_clip(job_id: str, clip_index: int):
+    """Delete a specific clip and its associated files from a completed job."""
+    job = _get_job(job_id)
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    
+    if clip_index < 0 or clip_index >= len(job.result_clips):
+        return jsonify({"error": "Invalid clip index"}), 400
+    
+    clip = job.result_clips[clip_index]
+    deleted_files = []
+    errors = []
+    
+    # Delete the main clip file
+    if os.path.exists(clip.path):
+        try:
+            os.remove(clip.path)
+            deleted_files.append(clip.path)
+        except Exception as e:
+            errors.append(f"Failed to delete {clip.path}: {str(e)}")
+    
+    # Delete the "why chosen" report
+    base = os.path.splitext(clip.path)[0]
+    why_path = base + "_why_chosen.txt"
+    if os.path.exists(why_path):
+        try:
+            os.remove(why_path)
+            deleted_files.append(why_path)
+        except Exception as e:
+            errors.append(f"Failed to delete {why_path}: {str(e)}")
+    
+    # Delete the SRT subtitle file
+    srt_path = base + ".srt"
+    if os.path.exists(srt_path):
+        try:
+            os.remove(srt_path)
+            deleted_files.append(srt_path)
+        except Exception as e:
+            errors.append(f"Failed to delete {srt_path}: {str(e)}")
+    
+    # Delete the thumbnail
+    thumb_path = base + "_thumb.jpg"
+    if os.path.exists(thumb_path):
+        try:
+            os.remove(thumb_path)
+            deleted_files.append(thumb_path)
+        except Exception as e:
+            errors.append(f"Failed to delete {thumb_path}: {str(e)}")
+    
+    # Delete the vertical shorts version if it exists
+    if clip.shorts_path and os.path.exists(clip.shorts_path):
+        try:
+            os.remove(clip.shorts_path)
+            deleted_files.append(clip.shorts_path)
+        except Exception as e:
+            errors.append(f"Failed to delete {clip.shorts_path}: {str(e)}")
+    
+    # Remove the clip from the job's result_clips list
+    job.result_clips.pop(clip_index)
+    
+    return jsonify({
+        "success": True,
+        "deleted_files": deleted_files,
+        "errors": errors,
+        "remaining_clips": len(job.result_clips)
+    }), 200
+
+
 # ---------------------------------------------------------------------------
 # API: Ollama models
 # ---------------------------------------------------------------------------
