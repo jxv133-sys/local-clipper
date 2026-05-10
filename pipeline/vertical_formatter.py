@@ -228,12 +228,19 @@ class VerticalFormatter:
         config,
         reference_resolution: tuple[int, int] | None = None,
         clip_resolution: tuple[int, int] | None = None,
+        transcript: "Transcript | None" = None,
+        clip_start: float = 0.0,
+        clip_end: float = 0.0,
+        settings: dict | None = None,
     ) -> None:
         """Apply the facecam placement to a single clip and encode the output.
 
         If ``reference_resolution`` and ``clip_resolution`` are both provided
         and differ, the facecam region coordinates are proportionally scaled
         before building the filter chain.
+
+        If ``settings["burn_subtitles"]`` is True and transcript data is provided,
+        animated subtitles will be burned into the output using the specified style.
 
         Args:
             clip_path:            Path to the source clip.
@@ -245,11 +252,17 @@ class VerticalFormatter:
             reference_resolution: (width, height) of the reference clip used
                                   to define the facecam region.
             clip_resolution:      (width, height) of this specific clip.
+            transcript:           Full transcript with all segments (optional, for subtitles).
+            clip_start:           Start time of this clip in the source video (seconds).
+            clip_end:             End time of this clip in the source video (seconds).
+            settings:             User settings dict (may contain burn_subtitles, subtitle_style).
 
         Raises:
             subprocess.CalledProcessError: If FFmpeg encoding fails.
             RuntimeError: If the clip resolution cannot be determined.
         """
+        settings = settings or {}
+        
         # Determine actual clip resolution
         if clip_resolution is None:
             clip_resolution = _probe_resolution(clip_path)
@@ -269,20 +282,108 @@ class VerticalFormatter:
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
 
+        # Check if we need to burn subtitles
+        burn_subtitles = settings.get("burn_subtitles", False)
+        subtitle_style_str = settings.get("subtitle_style", "bubble")
+        
+        # Map output label based on whether we're burning subtitles
+        video_output_label = "[with_facecam]"
+        
+        if burn_subtitles and transcript is not None and clip_start < clip_end:
+            # Generate subtitles for this clip's time range
+            from pipeline.models import SRTEntry, SubtitleStyle
+            from pipeline.animated_subtitle_renderer import AnimatedSubtitleRenderer
+            
+            # Parse subtitle style
+            try:
+                subtitle_style = SubtitleStyle(subtitle_style_str)
+            except ValueError:
+                logger.warning(
+                    "Invalid subtitle style '%s', falling back to BUBBLE",
+                    subtitle_style_str,
+                )
+                subtitle_style = SubtitleStyle.BUBBLE
+            
+            # Extract SRT entries for this clip's time range
+            srt_entries: list[SRTEntry] = []
+            entry_index = 1
+            
+            for seg in transcript.segments:
+                if not seg.text.strip():
+                    continue
+                # Include segment if it overlaps with the clip window
+                if seg.end <= clip_start or seg.start >= clip_end:
+                    continue
+                
+                # Adjust timestamps to be relative to clip start
+                rel_start = max(0.0, seg.start - clip_start)
+                rel_end = min(clip_end - clip_start, seg.end - clip_start)
+                
+                if seg.words:
+                    # Word-level splitting: group into short phrases (1-4 words)
+                    from pipeline.subtitle_generator import _word_level_entries
+                    new_entries = _word_level_entries(seg, clip_start, entry_index)
+                    srt_entries.extend(new_entries)
+                    entry_index += len(new_entries)
+                else:
+                    # Fallback: segment-level entry
+                    srt_entries.append(
+                        SRTEntry(
+                            index=entry_index,
+                            start=rel_start,
+                            end=rel_end,
+                            text=seg.text.strip(),
+                        )
+                    )
+                    entry_index += 1
+            
+            if srt_entries:
+                # Generate ASS subtitle filter
+                renderer = AnimatedSubtitleRenderer()
+                work_dir = os.path.dirname(output_path)
+                
+                subtitle_filter = renderer.build_subtitle_filter(
+                    srt_entries=srt_entries,
+                    style=subtitle_style,
+                    canvas_width=canvas_layout.canvas_width,
+                    canvas_height=canvas_layout.canvas_height,
+                    gameplay_region_top=canvas_layout.gameplay_y,
+                    config=config,
+                    work_dir=work_dir,
+                )
+                
+                # Append subtitle filter to the filter chain
+                filter_complex += ";" + subtitle_filter.filter_str
+                video_output_label = subtitle_filter.output_label
+                
+                logger.info(
+                    "Burning %d subtitle entries into clip with style %s",
+                    len(srt_entries), subtitle_style.value,
+                )
+            else:
+                logger.info(
+                    "No subtitle entries found for clip time range [%.1f, %.1f]",
+                    clip_start, clip_end,
+                )
+
         # Build FFmpeg command
         crf = getattr(config, "output_crf", 23)
         codec = getattr(config, "output_codec", "libx264")
+        preset = getattr(config, "output_preset", "ultrafast")  # Fast encoding for vertical formatting
 
         cmd = [
             "ffmpeg",
             "-y",                    # overwrite output
             "-i", clip_path,
             "-filter_complex", filter_complex,
-            "-map", "[with_facecam]",
+            "-map", video_output_label,
             "-map", "0:a?",          # preserve audio if present
             "-c:v", codec,
+            "-preset", preset,       # Encoding speed preset
             "-crf", str(crf),
             "-c:a", "copy",
+            "-threads", "0",         # Use all available CPU threads
+            "-movflags", "+faststart",  # Enable fast start for web playback
             output_path,
         ]
 
@@ -333,6 +434,25 @@ def process_vertical_formatting_job(job: VerticalFormattingJob) -> None:
             reference_resolution = tuple(res)  # type: ignore[assignment]
             break
 
+    # Load transcript if subtitle burning is enabled
+    transcript = None
+    if job.settings.get("burn_subtitles", False):
+        # Try to load transcript from the job's clip batch
+        # The transcript should be stored alongside the clips in the output directory
+        transcript_path = Path(job.output_dir) / "transcript.json"
+        if transcript_path.exists():
+            try:
+                import json as _json
+                from pipeline.models import Transcript
+                with open(transcript_path, "r", encoding="utf-8") as fh:
+                    transcript_data = _json.load(fh)
+                transcript = Transcript.from_dict(transcript_data)
+                logger.info("Loaded transcript with %d segments for subtitle burning", len(transcript.segments))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to load transcript for subtitle burning: %s", exc)
+        else:
+            logger.warning("Transcript file not found at %s, subtitles will be skipped", transcript_path)
+
     for clip in job.clips:
         # Check for cancellation before processing each clip
         if job.status == "cancelled":
@@ -345,6 +465,10 @@ def process_vertical_formatting_job(job: VerticalFormattingJob) -> None:
         clip_resolution: tuple[int, int] | None = (
             tuple(clip_resolution_raw) if clip_resolution_raw else None  # type: ignore[assignment]
         )
+        
+        # Extract clip timing information if available
+        clip_start = clip.get("start", 0.0)
+        clip_end = clip.get("end", 0.0)
 
         # Update current clip display
         job.current_clip = clip_name
@@ -361,6 +485,10 @@ def process_vertical_formatting_job(job: VerticalFormattingJob) -> None:
                 config=_make_job_config(job),
                 reference_resolution=reference_resolution,
                 clip_resolution=clip_resolution,
+                transcript=transcript,
+                clip_start=clip_start,
+                clip_end=clip_end,
+                settings=job.settings,
             )
 
             # Handle replacement / backup

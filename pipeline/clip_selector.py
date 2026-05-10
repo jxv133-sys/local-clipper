@@ -78,8 +78,31 @@ def refine_clip_boundaries_with_llm(
     transcript_block = "\n".join(lines)
 
     # List of available start/end timestamps the LLM can choose from
-    available_starts = sorted({f"{seg.start:.1f}" for seg in context_segs})
-    available_ends = sorted({f"{seg.end:.1f}" for seg in context_segs})
+    # Filter to only include combinations that respect max_clip_duration
+    available_starts = sorted({seg.start for seg in context_segs})
+    available_ends = sorted({seg.end for seg in context_segs})
+    
+    # Filter available_ends to only include those that would create valid clips
+    # For each potential start time, only allow end times that result in clips <= max_clip_duration
+    valid_end_times = set()
+    for start_time in available_starts:
+        for end_time in available_ends:
+            if end_time > start_time:
+                duration = end_time - start_time
+                if config.min_clip_duration <= duration <= config.max_clip_duration:
+                    valid_end_times.add(end_time)
+    
+    # Convert to formatted strings for the prompt
+    available_starts_str = sorted({f"{t:.1f}" for t in available_starts})
+    available_ends_str = sorted({f"{t:.1f}" for t in valid_end_times})
+    
+    # If no valid end times exist, return original clip
+    if not available_ends_str:
+        logger.warning(
+            "LLM boundary refinement: no valid end times found within duration constraints "
+            "for clip at %.1fs", clip.start
+        )
+        return clip
 
     current_duration = clip.end - clip.start
 
@@ -96,17 +119,19 @@ def refine_clip_boundaries_with_llm(
         "- Identify where the MOMENT peaks (the highlight event)\n"
         "- Identify where the REACTION ends (after the streamer responds)\n"
         "- Set START_TIME at the beginning of the setup\n"
-        "- Set END_TIME after the reaction resolves\n"
+        "- SET END_TIME after the reaction resolves\n"
         "- If the reaction is missing or cut off, extend END_TIME forward to capture it\n"
         "- Setup should be 5–10s before the moment. Reaction should be 5–10s after the moment.\n\n"
         "CONSTRAINTS:\n"
         f"- The clip MUST be at least {config.min_clip_duration:.0f}s long. Do not shrink below this.\n"
         f"- The clip MUST NOT exceed {config.max_clip_duration:.0f}s.\n"
-        f"- Current clip: {clip.start:.1f}s → {clip.end:.1f}s ({current_duration:.0f}s)\n\n"
+        f"- Current clip: {clip.start:.1f}s → {clip.end:.1f}s ({current_duration:.0f}s)\n"
+        f"- IMPORTANT: Only use END_TIME values from the 'Available end times' list below.\n"
+        f"  These end times have been pre-filtered to ensure the clip stays within {config.max_clip_duration:.0f}s.\n\n"
         f"TRANSCRIPT (context window {context_start:.1f}s → {context_end:.1f}s):\n"
         f"{transcript_block}\n\n"
-        f"Available start times: {', '.join(available_starts)}\n"
-        f"Available end times: {', '.join(available_ends)}\n\n"
+        f"Available start times: {', '.join(available_starts_str)}\n"
+        f"Available end times: {', '.join(available_ends_str)}\n\n"
         "Respond in EXACTLY this format (no other text):\n"
         "START_TIME: <seconds from the available start times above>\n"
         "END_TIME: <seconds from the available end times above>\n"

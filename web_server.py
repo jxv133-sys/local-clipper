@@ -421,9 +421,20 @@ def _run_pipeline_for_job(job: Job) -> None:
                 "duration": f"{int(round(clip.end - clip.start))}s",
                 "score": f"{clip.score:.2f}",
                 "thumbnail_name": thumbnail_name,
+                "start": clip.start,  # Add start time for subtitle generation
+                "end": clip.end,      # Add end time for subtitle generation
             })
         log(f"[ReportGenerator] Done in {time.time() - t0:.1f}s — {len(result_clips)} report(s)")
         job.add_progress(7, total_stages, "Generating Reports", 100)
+
+        # Save transcript to JSON for subtitle burning in vertical formatter
+        transcript_path = Path(job.config.output_dir) / "transcript.json"
+        try:
+            with open(transcript_path, "w", encoding="utf-8") as fh:
+                json.dump(transcript.to_dict(), fh, indent=2)
+            log(f"[ReportGenerator] Saved transcript to {transcript_path}")
+        except Exception as exc:
+            log(f"[ReportGenerator] Warning: Failed to save transcript: {exc}")
 
         # Clean up temp dir
         shutil.rmtree(job.config.work_dir, ignore_errors=True)
@@ -1793,6 +1804,8 @@ def confirm_placement_endpoint():
                 "path": clip_data["path"],
                 "name": clip_data["name"],
                 "resolution": [frame_width, frame_height],
+                "start": clip_data.get("start", 0.0),  # Clip start time for subtitle generation
+                "end": clip_data.get("end", 0.0),      # Clip end time for subtitle generation
             })
 
         # Create VerticalFormattingJob

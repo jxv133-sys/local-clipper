@@ -1205,6 +1205,39 @@
             </div>
           </div>
 
+          <!-- Subtitle Options -->
+          <div class="control-group" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
+            <h4 style="font-size: 0.85rem; color: var(--accent2); margin-bottom: 12px; font-weight: 600;">📝 Subtitle Options</h4>
+            
+            <div style="margin-bottom: 12px;">
+              <div class="toggle-row">
+                <input type="checkbox" id="burn-subtitles" checked />
+                <label for="burn-subtitles" style="margin:0; font-size: 0.85rem;">Burn subtitles into video</label>
+              </div>
+              <div style="font-size: 0.72rem; color: var(--dim); margin-top: 4px; margin-left: 23px;">
+                Adds animated word-by-word subtitles (1-4 words per group)
+              </div>
+            </div>
+
+            <div id="subtitle-style-row" style="display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 12px;">
+              <span class="control-label" style="font-size: 0.8rem;">Style</span>
+              <select id="subtitle-style" class="control-slider" style="padding: 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text);">
+                <option value="bubble" selected>Bubble (TikTok style)</option>
+                <option value="popup">Popup (Zoom effect)</option>
+                <option value="highlight">Highlight (Background)</option>
+                <option value="karaoke">Karaoke (Word-by-word)</option>
+              </select>
+            </div>
+
+            <script>
+              // Toggle subtitle style dropdown visibility based on checkbox
+              document.getElementById('burn-subtitles').addEventListener('change', function() {
+                const styleRow = document.getElementById('subtitle-style-row');
+                styleRow.style.display = this.checked ? 'grid' : 'none';
+              });
+            </script>
+          </div>
+
           <!-- Action buttons -->
           <div class="editor-actions">
             <button class="editor-btn editor-btn-secondary" id="skip-detect-btn" onclick="skipDetection()">⏭️ Skip & Place Manually</button>
@@ -2599,6 +2632,12 @@ async function confirmPlacement() {
   console.log('[Confirm] Area fraction:', areaFraction.toFixed(4), `(${(areaFraction * 100).toFixed(2)}%)`);
   console.log('[Confirm] Valid range: 4% - 30%');
   
+  // Get subtitle settings
+  const burnSubtitles = document.getElementById('burn-subtitles').checked;
+  const subtitleStyle = document.getElementById('subtitle-style').value;
+  
+  console.log('[Confirm] Subtitle settings:', { burnSubtitles, subtitleStyle });
+  
   try {
     const res = await fetch('/api/mini-editor/confirm', {
       method: 'POST',
@@ -2609,6 +2648,8 @@ async function confirmPlacement() {
         settings: {
           create_backup: true,
           replace_originals: true,  // Replace original clips with vertical versions
+          burn_subtitles: burnSubtitles,
+          subtitle_style: subtitleStyle,
         },
       }),
     });
