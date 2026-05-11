@@ -216,6 +216,52 @@ class Config:
     })
 
     # ---------------------------------------------------------------------------
+    # Clip Selection Improvements (Phase 1) — New Feature Flags and Parameters
+    # ---------------------------------------------------------------------------
+
+    # Creator Profile
+    creator_id: str | None = None
+    creator_profile_path: str = field(default_factory=lambda: 
+        os.path.expanduser("~/.cache/local-clipper/profiles"))
+    creator_profile: "CreatorProfile | None" = None  # Loaded at runtime
+    
+    # Phrase Detection
+    phrase_keywords: list[str] = field(default_factory=lambda: [
+        "oh my god", "no way", "watch this", "look at this",
+        "are you kidding", "i can't believe", "what the hell"
+    ])
+    phrase_weight: float = 4.0
+    
+    # Emotion Detection
+    emotion_detection_enabled: bool = True
+    emotion_boost_multiplier: float = 0.3
+    
+    # Semantic Deduplication
+    semantic_dedup_enabled: bool = True
+    semantic_dedup_threshold: float = 0.8
+    semantic_dedup_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    
+    # Adaptive Spacing
+    adaptive_spacing_enabled: bool = True
+    adaptive_spacing_min_floor: float = 30.0
+    
+    # Hook Detection (extended)
+    hook_boost_multiplier: float = 0.4
+    hook_score_threshold_extended: float = 0.6
+    
+    # Engagement Prediction
+    engagement_prediction_enabled: bool = True
+    engagement_high_threshold: float = 0.7
+    engagement_low_threshold: float = 0.3
+    engagement_high_boost: float = 1.2
+    engagement_low_penalty: float = 0.8
+    
+    # Video Context
+    video_summary_enabled: bool = True
+    video_summary_sample_rate: int = 20  # Take every Nth segment
+    video_summary_max_words: int = 500
+
+    # ---------------------------------------------------------------------------
     # Shorts / Vertical Formatter (Stage 8) — ShortsConfig fields
     # ---------------------------------------------------------------------------
 
@@ -250,6 +296,41 @@ class Config:
     subtitle_shadow_depth: float = 2.0
     subtitle_margin_bottom: int = 80              # px from bottom of gameplay region
     subtitle_words_per_group: int = 3
+
+    def adjust_weights_for_creator_profile(self) -> None:
+        """Adjust text_weight and audio_weight based on creator profile energy_level.
+        
+        This method should be called after the creator profile is loaded and stored
+        in config.creator_profile. It adjusts the scoring weights to match the
+        creator's content style:
+        
+        - High-energy (gaming, comedy): Increase audio_weight to emphasize reactions
+        - Calm (podcast, educational): Increase text_weight to emphasize semantic content
+        - Moderate: Keep balanced weights
+        
+        The weights are adjusted proportionally while maintaining their sum.
+        """
+        if self.creator_profile is None:
+            return
+        
+        energy_level = self.creator_profile.energy_level
+        
+        # Calculate the non-LLM weight budget (text + audio)
+        non_llm_budget = self.text_weight + self.audio_weight
+        
+        if energy_level == "high":
+            # High-energy: 40% text, 60% audio (emphasize audio reactions)
+            self.text_weight = 0.40 * non_llm_budget
+            self.audio_weight = 0.60 * non_llm_budget
+        elif energy_level == "calm":
+            # Calm: 60% text, 40% audio (emphasize semantic content)
+            self.text_weight = 0.60 * non_llm_budget
+            self.audio_weight = 0.40 * non_llm_budget
+        elif energy_level == "moderate":
+            # Moderate: 50% text, 50% audio (balanced)
+            self.text_weight = 0.50 * non_llm_budget
+            self.audio_weight = 0.50 * non_llm_budget
+        # else: unknown energy_level, keep existing weights
 
     def __post_init__(self) -> None:
         """Validate config fields after construction."""

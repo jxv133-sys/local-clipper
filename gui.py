@@ -130,7 +130,7 @@ def run_pipeline_thread(video_path: str, config: Config, msg_queue: queue.Queue)
         stage_start("ClipSelector")
         t0 = time.time()
         video_duration = _get_video_duration(video_path)
-        clips = select_clips(config, scored_segments, transcript, video_duration)
+        clips = select_clips(config, scored_segments, transcript, video_duration, video_path, wav_path)
         stage_done("ClipSelector", time.time() - t0)
 
         if not clips:

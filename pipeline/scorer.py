@@ -35,6 +35,7 @@ def compute_text_score(config: Config, segment: Segment) -> float:
 
     Scoring components:
     - +2.0 per keyword occurrence (case-insensitive)
+    - +phrase_weight (default 4.0) per phrase keyword match (multi-word phrases)
     - +reaction_weight (default 3.0) per reaction keyword occurrence
       (whole-word match, case-insensitive)
     - +0.02 per character in segment.text (rewards longer speech)
@@ -49,6 +50,7 @@ def compute_text_score(config: Config, segment: Segment) -> float:
         final = (1 - w) * keyword_score + w * pattern_score
     """
     from pipeline.text_patterns import analyze_text_patterns
+    from pipeline.phrase_detector import detect_phrases
 
     text = segment.text
     text_lower = text.lower()
@@ -63,6 +65,15 @@ def compute_text_score(config: Config, segment: Segment) -> float:
                 break
             raw_score += 2.0
             pos = idx + len(kw)
+
+    # Phrase detection: multi-word keyword matching
+    phrase_matches = detect_phrases(text, config.phrase_keywords)
+    for phrase, start, end in phrase_matches:
+        raw_score += config.phrase_weight  # Default: 4.0 (higher than single keyword)
+        logger.debug(
+            "[Scorer] Phrase detected at %.1fs: %r (weight=%.1f)",
+            segment.start, phrase, config.phrase_weight
+        )
 
     # Reaction keywords: whole-word, case-insensitive matching
     for rk in config.reaction_keywords:
@@ -550,6 +561,116 @@ def combine_scores(
 # Phase 2: LLM scoring on candidate windows
 # ---------------------------------------------------------------------------
 
+def _build_customized_rubric(config: Config) -> str:
+    """Build a customized scoring rubric based on creator profile.
+    
+    Customizes the rubric emphasis based on content_type and energy_level:
+    - High-energy content (gaming, comedy): emphasize audio energy and reactions
+    - Calm content (podcast, educational): emphasize semantic interest and insights
+    - Adjusts scale anchors to be relative to the creator's typical content
+    
+    Returns:
+        Formatted rubric string for LLM prompt
+    """
+    profile = config.creator_profile
+    
+    # Default rubric (no profile or auto content type)
+    if not profile or profile.content_type == "auto":
+        return (
+            "SCORING RUBRIC — be STRICT. The average clip should score 4-5. "
+            "Only genuinely exciting moments score 7+:\n"
+            "  1   Dead air, silence, nothing happening\n"
+            "  2   Filler content, boring transition, no value\n"
+            "  3   Routine commentary, flat delivery, low energy\n"
+            "  4   Mildly interesting but forgettable — average content\n"
+            "  5   Decent moment, some engagement, watchable\n"
+            "  6   Good moment — clear reaction or interesting content\n"
+            "  7   Strong clip — funny, exciting, or emotionally engaging\n"
+            "  8   Very good — shareable, memorable, strong energy\n"
+            "  9   Excellent — would stop a scroll, high viral potential\n"
+            " 10   Perfect — unmissable, instant viral, once-in-a-stream moment\n\n"
+            "IMPORTANT RULES:\n"
+            "- A quiet/whispered moment (low volume %) should NEVER score above 5 unless "
+            "the words themselves are extraordinary\n"
+            "- Generic stream phrases ('follow the YouTube', 'w in the chat', 'here we go') "
+            "score 1-3 regardless of energy\n"
+            "- Score based on what a VIEWER would feel watching this cold, not the streamer's "
+            "perspective\n"
+            "- If you are unsure, score lower rather than higher"
+        )
+    
+    # High-energy content: gaming, comedy
+    if profile.content_type in ("gaming", "comedy") or profile.energy_level == "high":
+        return (
+            f"SCORING RUBRIC — calibrated for {profile.content_type.upper()} content. "
+            "Be STRICT. The average clip should score 4-5. Only genuinely exciting moments score 7+:\n"
+            "  1   Dead air, silence, nothing happening\n"
+            "  2   Filler content, boring transition, no value\n"
+            "  3   Routine gameplay/commentary, flat delivery, low energy\n"
+            f"  4   Mildly interesting but forgettable — typical {profile.content_type} content\n"
+            "  5   Decent moment, some engagement, watchable\n"
+            "  6   Good moment — clear reaction, excitement, or funny moment\n"
+            "  7   Strong clip — HIGH ENERGY, intense reaction, exciting gameplay/punchline\n"
+            "  8   Very good — shareable, memorable, LOUD and engaging\n"
+            "  9   Excellent — would stop a scroll, peak excitement/comedy\n"
+            " 10   Perfect — unmissable, instant viral, legendary moment\n\n"
+            "IMPORTANT RULES FOR HIGH-ENERGY CONTENT:\n"
+            "- PRIORITIZE audio energy and reaction intensity — loud moments with strong reactions score higher\n"
+            "- Look for sudden excitement, laughter, screaming, or intense emotional reactions\n"
+            "- Quiet moments should score LOW (1-4) unless the words are extraordinary\n"
+            "- Generic phrases score 1-3 regardless of energy\n"
+            "- Score based on VIEWER excitement, not just content interest\n"
+            "- If you are unsure, score lower rather than higher"
+        )
+    
+    # Calm content: podcast, educational
+    if profile.content_type in ("podcast", "educational") or profile.energy_level == "calm":
+        return (
+            f"SCORING RUBRIC — calibrated for {profile.content_type.upper()} content. "
+            "Be STRICT. The average clip should score 4-5. Only genuinely insightful moments score 7+:\n"
+            "  1   Dead air, silence, nothing happening\n"
+            "  2   Filler content, boring transition, no value\n"
+            "  3   Routine discussion, flat delivery, no insight\n"
+            f"  4   Mildly interesting but forgettable — typical {profile.content_type} content\n"
+            "  5   Decent moment, some engagement, watchable\n"
+            "  6   Good moment — interesting insight, clear explanation, or engaging story\n"
+            "  7   Strong clip — VALUABLE INSIGHT, memorable explanation, or compelling narrative\n"
+            "  8   Very good — shareable, thought-provoking, high semantic value\n"
+            "  9   Excellent — would stop a scroll, profound insight or fascinating story\n"
+            " 10   Perfect — unmissable, instant viral, paradigm-shifting insight\n\n"
+            "IMPORTANT RULES FOR CALM CONTENT:\n"
+            "- PRIORITIZE semantic interest and insight quality — profound ideas score higher\n"
+            "- Look for clear explanations, surprising insights, compelling stories, or valuable takeaways\n"
+            "- Audio energy is LESS important — quiet moments can score high if content is strong\n"
+            "- Generic discussion or filler scores 1-3\n"
+            "- Score based on VIEWER learning/engagement, not just entertainment\n"
+            "- If you are unsure, score lower rather than higher"
+        )
+    
+    # Moderate energy: vlog, other content types
+    return (
+        f"SCORING RUBRIC — calibrated for {profile.content_type.upper()} content. "
+        "Be STRICT. The average clip should score 4-5. Only genuinely engaging moments score 7+:\n"
+        "  1   Dead air, silence, nothing happening\n"
+        "  2   Filler content, boring transition, no value\n"
+        "  3   Routine content, flat delivery, low engagement\n"
+        f"  4   Mildly interesting but forgettable — typical {profile.content_type} content\n"
+        "  5   Decent moment, some engagement, watchable\n"
+        "  6   Good moment — clear emotion, interesting content, or engaging story\n"
+        "  7   Strong clip — emotionally engaging, funny, or memorable\n"
+        "  8   Very good — shareable, relatable, strong emotional connection\n"
+        "  9   Excellent — would stop a scroll, highly relatable or moving\n"
+        " 10   Perfect — unmissable, instant viral, universally compelling\n\n"
+        "IMPORTANT RULES:\n"
+        "- BALANCE audio energy and semantic interest — both matter\n"
+        "- Look for authentic emotions, relatable moments, or interesting stories\n"
+        "- Quiet moments can score moderately (4-6) if emotionally engaging\n"
+        "- Generic content or filler scores 1-3\n"
+        "- Score based on VIEWER emotional connection and engagement\n"
+        "- If you are unsure, score lower rather than higher"
+    )
+
+
 def _call_llm(config: Config, prompt: str) -> str:
     payload = {"model": config.llm_model, "prompt": prompt, "stream": False}
 
@@ -838,9 +959,33 @@ def _score_window_with_llm(
         )
     transcript_block = "\n".join(lines)
 
+    # Build creator profile context if available
+    profile_context = ""
+    if config.creator_profile:
+        profile = config.creator_profile
+        profile_context = (
+            f"CREATOR PROFILE:\n"
+            f"Content Type: {profile.content_type}\n"
+            f"Energy Level: {profile.energy_level}\n"
+            f"Typical Clip Duration: {profile.typical_clip_duration:.0f}s\n\n"
+        )
+
+    # Customize rubric based on content_type and energy_level
+    rubric = _build_customized_rubric(config)
+    
+    # Log customized rubric at DEBUG level
+    logger.debug(
+        "[Scorer] Customized rubric for creator_id=%s (content_type=%s, energy_level=%s):\n%s",
+        config.creator_profile.creator_id if config.creator_profile else "none",
+        config.creator_profile.content_type if config.creator_profile else "auto",
+        config.creator_profile.energy_level if config.creator_profile else "moderate",
+        rubric
+    )
+
     prompt = (
         "You are a strict YouTube Shorts editor. Your job is to find genuinely viral-worthy "
         "moments — not just anything that sounds vaguely interesting.\n\n"
+        f"{profile_context}"
         "You will see a ~30-second transcript window. Each line shows:\n"
         "  [timestamp] [vol:█████ NNN% of peak] spoken text\n"
         "The volume bar and percentage show how loud that moment is relative to the "
@@ -850,26 +995,7 @@ def _score_window_with_llm(
         f"ABSOLUTE LEVEL: {abs_energy_desc}\n\n"
         f"TRANSCRIPT:\n{transcript_block}\n\n"
         "The segment marked <<<HIGHLIGHT>>> is the candidate clip moment.\n\n"
-        "SCORING RUBRIC — be STRICT. The average clip should score 4-5. "
-        "Only genuinely exciting moments score 7+:\n"
-        "  1   Dead air, silence, nothing happening\n"
-        "  2   Filler content, boring transition, no value\n"
-        "  3   Routine commentary, flat delivery, low energy\n"
-        "  4   Mildly interesting but forgettable — average content\n"
-        "  5   Decent moment, some engagement, watchable\n"
-        "  6   Good moment — clear reaction or interesting content\n"
-        "  7   Strong clip — funny, exciting, or emotionally engaging\n"
-        "  8   Very good — shareable, memorable, strong energy\n"
-        "  9   Excellent — would stop a scroll, high viral potential\n"
-        " 10   Perfect — unmissable, instant viral, once-in-a-stream moment\n\n"
-        "IMPORTANT RULES:\n"
-        "- A quiet/whispered moment (low volume %) should NEVER score above 5 unless "
-        "the words themselves are extraordinary\n"
-        "- Generic stream phrases ('follow the YouTube', 'w in the chat', 'here we go') "
-        "score 1-3 regardless of energy\n"
-        "- Score based on what a VIEWER would feel watching this cold, not the streamer's "
-        "perspective\n"
-        "- If you are unsure, score lower rather than higher\n\n"
+        f"{rubric}\n\n"
         "Respond in EXACTLY this format (no extra text, no preamble):\n"
         "SCORE: <integer 1-10>\n"
         "TITLE: <catchy YouTube Shorts title, max 60 chars, no quotes>\n"

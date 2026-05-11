@@ -102,7 +102,7 @@ class TestRunPipelineStageOrdering:
             call_order.append("score_segments")
             return scored
 
-        def mock_select_clips(config, scored_, transcript_, video_duration):
+        def mock_select_clips(config, scored_, transcript_, video_duration, video_path=None, wav_path=None):
             call_order.append("select_clips")
             return clips
 
@@ -322,3 +322,113 @@ class TestSuccessfulRun:
         # clip_1_0s.mp4  25s  score=0.90
         assert "25s" in captured.out
         assert "score=0.90" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Tests: Creator Profile Integration
+# ---------------------------------------------------------------------------
+
+class TestCreatorProfileIntegration:
+    """Tests for --creator-id flag and profile loading."""
+
+    def test_creator_id_flag_loads_existing_profile(self, tmp_path):
+        """When --creator-id is provided and profile exists, it is loaded."""
+        import main as m
+        from pipeline.creator_profile import save_creator_profile, create_default_profile
+
+        # Create a profile on disk
+        profile_dir = tmp_path / "profiles"
+        profile_dir.mkdir()
+        profile = create_default_profile("test_creator", content_type="gaming", energy_level="high")
+        profile.video_count = 5
+        save_creator_profile(profile, profile_dir)
+
+        # Mock argparse namespace
+        args = MagicMock()
+        args.creator_id = "test_creator"
+        args.output_dir = str(tmp_path / "output")
+        args.whisper_model = "base"
+        args.top_n = 5
+        args.llm = False
+        args.llm_endpoint = None
+        args.llm_model = "llama3"
+        args.keywords = None
+        args.no_subtitles = False
+        args.no_cache = False
+        args.language = "auto"
+        args.no_trim_silence = False
+        args.shorts = False
+        args.clip_tail_padding = 1.5
+
+        with patch("pipeline.creator_profile.DEFAULT_PROFILE_DIR", profile_dir):
+            config = m.build_config(args, str(tmp_path))
+
+        assert config.creator_id == "test_creator"
+        assert config.creator_profile is not None
+        assert config.creator_profile.creator_id == "test_creator"
+        assert config.creator_profile.content_type == "gaming"
+        assert config.creator_profile.energy_level == "high"
+        assert config.creator_profile.video_count == 5
+
+    def test_creator_id_flag_creates_default_profile_if_not_found(self, tmp_path):
+        """When --creator-id is provided but profile doesn't exist, create default."""
+        import main as m
+
+        profile_dir = tmp_path / "profiles"
+        profile_dir.mkdir()
+
+        args = MagicMock()
+        args.creator_id = "new_creator"
+        args.output_dir = str(tmp_path / "output")
+        args.whisper_model = "base"
+        args.top_n = 5
+        args.llm = False
+        args.llm_endpoint = None
+        args.llm_model = "llama3"
+        args.keywords = None
+        args.no_subtitles = False
+        args.no_cache = False
+        args.language = "auto"
+        args.no_trim_silence = False
+        args.shorts = False
+        args.clip_tail_padding = 1.5
+
+        with patch("pipeline.creator_profile.DEFAULT_PROFILE_DIR", profile_dir):
+            config = m.build_config(args, str(tmp_path))
+
+        assert config.creator_id == "new_creator"
+        assert config.creator_profile is not None
+        assert config.creator_profile.creator_id == "new_creator"
+        assert config.creator_profile.content_type == "vlog"  # default
+        assert config.creator_profile.energy_level == "moderate"  # default
+        assert config.creator_profile.video_count == 0
+
+        # Verify profile was saved to disk
+        profile_path = profile_dir / "new_creator.json"
+        assert profile_path.exists()
+
+    def test_no_creator_id_flag_leaves_profile_none(self, tmp_path):
+        """When --creator-id is not provided, creator_profile remains None."""
+        import main as m
+
+        args = MagicMock()
+        args.creator_id = None
+        args.output_dir = str(tmp_path / "output")
+        args.whisper_model = "base"
+        args.top_n = 5
+        args.llm = False
+        args.llm_endpoint = None
+        args.llm_model = "llama3"
+        args.keywords = None
+        args.no_subtitles = False
+        args.no_cache = False
+        args.language = "auto"
+        args.no_trim_silence = False
+        args.shorts = False
+        args.clip_tail_padding = 1.5
+
+        config = m.build_config(args, str(tmp_path))
+
+        assert config.creator_id is None
+        assert not hasattr(config, "creator_profile") or config.creator_profile is None
+

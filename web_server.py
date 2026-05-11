@@ -369,7 +369,7 @@ def _run_pipeline_for_job(job: Job) -> None:
         log("[ClipSelector] Starting...")
         t0 = time.time()
         video_duration = _get_video_duration(job.video_path)
-        clips = select_clips(job.config, scored_segments, transcript, video_duration)
+        clips = select_clips(job.config, scored_segments, transcript, video_duration, job.video_path, wav_path)
         log(f"[ClipSelector] Done in {time.time() - t0:.1f}s — {len(clips)} clip(s) selected")
         job.add_progress(4, total_stages, "Selecting Clips", 75)
 

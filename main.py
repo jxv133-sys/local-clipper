@@ -204,11 +204,35 @@ def build_config(args: argparse.Namespace, work_dir: str) -> Config:
     cfg.shorts_enabled = args.shorts
     cfg.clip_tail_padding = args.clip_tail_padding
 
+    # Creator profile handling
+    if args.creator_id:
+        from pipeline.creator_profile import load_creator_profile, create_default_profile, save_creator_profile
+        
+        cfg.creator_id = args.creator_id
+        print(f"[CreatorProfile] Loading profile for creator: {args.creator_id}", flush=True)
+        
+        profile = load_creator_profile(args.creator_id)
+        if profile is None:
+            print(f"[CreatorProfile] No existing profile found — creating default profile", flush=True)
+            profile = create_default_profile(args.creator_id)
+            save_creator_profile(profile)
+            print(f"[CreatorProfile] Created and saved default profile: content_type={profile.content_type}, energy_level={profile.energy_level}", flush=True)
+        else:
+            print(f"[CreatorProfile] Loaded existing profile: content_type={profile.content_type}, energy_level={profile.energy_level}, video_count={profile.video_count}", flush=True)
+        
+        # Store profile in config for use by scorer and clip_selector
+        cfg.creator_profile = profile
+
     # When LLM is enabled, give it real weight and reduce text/audio proportionally
     if cfg.llm_enabled:
         cfg.llm_weight = 0.4
         cfg.text_weight = 0.35
         cfg.audio_weight = 0.25
+    
+    # Adjust scoring weights based on creator's energy level (after LLM weights are set)
+    if args.creator_id and cfg.creator_profile:
+        cfg.adjust_weights_for_creator_profile()
+        print(f"[CreatorProfile] Adjusted weights for energy_level={cfg.creator_profile.energy_level}: text={cfg.text_weight:.2f}, audio={cfg.audio_weight:.2f}", flush=True)
 
     return cfg
 
@@ -254,7 +278,7 @@ def run_pipeline(video_path: str, config: Config) -> list[str]:
     # Stage 4: Clip selection
     video_duration = _get_video_duration(video_path)
     clips = _run_stage("ClipSelector", select_clips, config, scored_segments,
-                       transcript, video_duration)
+                       transcript, video_duration, video_path, wav_path)
 
     if not clips:
         raise PipelineError("No clips were selected. Try lowering --top-n or check the video.")
@@ -337,6 +361,8 @@ def main() -> None:
                         help="Seconds of video to keep after the last word in a clip (default: 1.5)")
     parser.add_argument("--language", default="auto",
                         help="Transcription language code (default: auto). E.g. 'en', 'es', 'fr'")
+    parser.add_argument("--creator-id", default=None,
+                        help="Creator ID for profile-based scoring calibration (e.g., channel name)")
 
     args = parser.parse_args()
 

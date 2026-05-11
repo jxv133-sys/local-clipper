@@ -1082,3 +1082,158 @@ class TestCheckLLMModelAvailable:
         cfg = self._make_config(llm_model="llama3:8b")
         with patch("pipeline.scorer.requests.get", return_value=self._mock_tags_response(["llama3:8b", "mistral:latest"])):
             assert _check_llm_model_available(cfg) is True
+
+
+# ---------------------------------------------------------------------------
+# Property-based tests — Profile-Based Prompt Differentiation (Task 6.5)
+# ---------------------------------------------------------------------------
+
+def _classify_rubric_type(content_type: str, energy_level: str) -> str:
+    """Classify which rubric type will be returned by _build_customized_rubric.
+    
+    This mirrors the logic in _build_customized_rubric to determine which
+    rubric template is used.
+    """
+    # Default rubric (no profile or auto content type)
+    if content_type == "auto":
+        return "default"
+    
+    # High-energy content: gaming, comedy, or high energy level
+    if content_type in ("gaming", "comedy") or energy_level == "high":
+        return "high_energy"
+    
+    # Calm content: podcast, educational, or calm energy level
+    if content_type in ("podcast", "educational") or energy_level == "calm":
+        return "calm"
+    
+    # Moderate energy: vlog, other content types
+    return "moderate"
+
+
+# Feature: clip-selection-improvements, Property 17: Profile-Based Prompt Differentiation
+# Validates: Requirements 3.1
+@given(
+    content_type_a=st.sampled_from(["gaming", "comedy", "podcast", "educational", "vlog", "auto"]),
+    energy_level_a=st.sampled_from(["high", "moderate", "calm"]),
+    content_type_b=st.sampled_from(["gaming", "comedy", "podcast", "educational", "vlog", "auto"]),
+    energy_level_b=st.sampled_from(["high", "moderate", "calm"]),
+)
+@settings(max_examples=100)
+def test_property_17_profile_prompt_differentiation(
+    content_type_a: str,
+    energy_level_a: str,
+    content_type_b: str,
+    energy_level_b: str,
+) -> None:
+    """Property 17: Profile-Based Prompt Differentiation.
+    
+    For any two CreatorProfile objects with different content_type or energy_level,
+    the generated LLM prompts should differ in their rubric content (different
+    emphasis keywords) UNLESS they map to the same rubric type.
+    
+    The rubric selection logic is:
+    - content_type == "auto" → default rubric
+    - content_type in ("gaming", "comedy") OR energy_level == "high" → high-energy rubric
+    - content_type in ("podcast", "educational") OR energy_level == "calm" → calm rubric
+    - otherwise → moderate rubric
+    
+    **Validates: Requirements 3.1**
+    """
+    from pipeline.models import CreatorProfile
+    from pipeline.scorer import _build_customized_rubric
+    
+    # Create two profiles with the given parameters
+    profile_a = CreatorProfile(
+        creator_id="creator_a",
+        content_type=content_type_a,
+        energy_level=energy_level_a,
+        typical_clip_duration=30.0,
+        keyword_overrides=[],
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        video_count=1,
+    )
+    
+    profile_b = CreatorProfile(
+        creator_id="creator_b",
+        content_type=content_type_b,
+        energy_level=energy_level_b,
+        typical_clip_duration=30.0,
+        keyword_overrides=[],
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        video_count=1,
+    )
+    
+    # Build configs with these profiles
+    config_a = Config(work_dir="/tmp/test")
+    config_a.creator_profile = profile_a
+    
+    config_b = Config(work_dir="/tmp/test")
+    config_b.creator_profile = profile_b
+    
+    # Generate rubrics
+    rubric_a = _build_customized_rubric(config_a)
+    rubric_b = _build_customized_rubric(config_b)
+    
+    # Determine which rubric type each profile maps to
+    rubric_type_a = _classify_rubric_type(content_type_a, energy_level_a)
+    rubric_type_b = _classify_rubric_type(content_type_b, energy_level_b)
+    
+    # If profiles map to different rubric types, rubrics should differ
+    if rubric_type_a != rubric_type_b:
+        assert rubric_a != rubric_b, (
+            f"Rubrics should differ when profiles map to different rubric types:\n"
+            f"Profile A: content_type={content_type_a}, energy_level={energy_level_a} → {rubric_type_a}\n"
+            f"Profile B: content_type={content_type_b}, energy_level={energy_level_b} → {rubric_type_b}\n"
+            f"Rubric A length: {len(rubric_a)}\n"
+            f"Rubric B length: {len(rubric_b)}"
+        )
+        
+        # Verify that the rubrics contain the expected emphasis keywords for their type
+        # High-energy rubric should contain high-energy keywords
+        if rubric_type_a == "high_energy":
+            assert any(keyword in rubric_a for keyword in ["audio energy", "reaction intensity", "HIGH ENERGY", "LOUD"]), (
+                f"High-energy rubric A should contain high-energy keywords"
+            )
+        
+        # Calm rubric should contain calm keywords
+        if rubric_type_a == "calm":
+            assert any(keyword in rubric_a for keyword in ["semantic interest", "insight quality", "VALUABLE INSIGHT"]), (
+                f"Calm rubric A should contain calm keywords"
+            )
+        
+        # Moderate rubric should contain moderate keywords
+        if rubric_type_a == "moderate":
+            assert any(keyword in rubric_a for keyword in ["BALANCE", "emotional connection", "relatable"]), (
+                f"Moderate rubric A should contain moderate keywords"
+            )
+        
+        # Check profile B keywords
+        if rubric_type_b == "high_energy":
+            assert any(keyword in rubric_b for keyword in ["audio energy", "reaction intensity", "HIGH ENERGY", "LOUD"]), (
+                f"High-energy rubric B should contain high-energy keywords"
+            )
+        
+        if rubric_type_b == "calm":
+            assert any(keyword in rubric_b for keyword in ["semantic interest", "insight quality", "VALUABLE INSIGHT"]), (
+                f"Calm rubric B should contain calm keywords"
+            )
+        
+        if rubric_type_b == "moderate":
+            assert any(keyword in rubric_b for keyword in ["BALANCE", "emotional connection", "relatable"]), (
+                f"Moderate rubric B should contain moderate keywords"
+            )
+    else:
+        # If profiles map to the same rubric type, rubrics may still differ if content_type differs
+        # (because content_type is interpolated into the rubric text)
+        if content_type_a != content_type_b and rubric_type_a not in ("default", "high_energy", "calm", "moderate"):
+            # This shouldn't happen given our classification logic, but handle it gracefully
+            pass
+        elif content_type_a == content_type_b:
+            # Same content type and same rubric type → rubrics should be identical
+            assert rubric_a == rubric_b, (
+                f"Rubrics should be identical when profiles map to the same rubric type and content_type:\n"
+                f"Profile A: content_type={content_type_a}, energy_level={energy_level_a} → {rubric_type_a}\n"
+                f"Profile B: content_type={content_type_b}, energy_level={energy_level_b} → {rubric_type_b}"
+            )

@@ -27,6 +27,7 @@ def refine_clip_boundaries_with_llm(
     clip: Clip,
     transcript: Transcript,
     video_duration: float,
+    wav_path: str | None = None,
 ) -> Clip:
     """Ask the LLM to pick exact start/end timestamps for a clip using the Setup → Moment → Reaction arc.
 
@@ -49,6 +50,7 @@ def refine_clip_boundaries_with_llm(
         clip: The clip whose boundaries should be refined.
         transcript: Full transcript for context lookup.
         video_duration: Total video duration for clamping.
+        wav_path: Optional path to audio WAV file for natural pause detection.
 
     Returns:
         A new Clip with refined boundaries, or the original clip on failure.
@@ -163,6 +165,37 @@ def refine_clip_boundaries_with_llm(
     except ValueError:
         return clip
 
+    # Detect natural pauses and snap LLM-suggested boundaries to nearest pauses
+    if wav_path:
+        from pipeline.pause_detector import detect_natural_pauses, snap_to_nearest_pause  # noqa: PLC0415
+        
+        try:
+            pauses = detect_natural_pauses(transcript, wav_path, silence_threshold=0.5)
+            logger.info(
+                "  Detected %d natural pauses for boundary refinement (clip at %.1fs)",
+                len(pauses),
+                clip.start,
+            )
+            
+            # Snap both start and end to nearest pauses within 3.0 seconds
+            original_start = new_start
+            original_end = new_end
+            new_start = snap_to_nearest_pause(new_start, pauses, max_distance=3.0)
+            new_end = snap_to_nearest_pause(new_end, pauses, max_distance=3.0)
+            
+            # Log adjustments if boundaries were snapped
+            if new_start != original_start or new_end != original_end:
+                logger.info(
+                    "  Snapped boundaries to natural pauses: start %.1fs→%.1fs, end %.1fs→%.1fs",
+                    original_start, new_start, original_end, new_end,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Natural pause detection failed for clip at %.1fs: %s. Continuing without pause snapping.",
+                clip.start,
+                exc,
+            )
+
     # Snap to the nearest actual segment boundary
     all_starts = [seg.start for seg in transcript.segments]
     all_ends = [seg.end for seg in transcript.segments]
@@ -215,6 +248,7 @@ def select_clips(
     transcript: Transcript,
     video_duration: float,
     video_path: str | None = None,
+    wav_path: str | None = None,
 ) -> list[Clip]:
     """
     Rank segments by clip_score, select top N, expand to 20-45s,
@@ -227,6 +261,8 @@ def select_clips(
         video_duration: Total duration of the source video in seconds.
         video_path: Optional path to the source video file. Required when
             config.snap_to_scene_cuts is True; ignored otherwise.
+        wav_path: Optional path to audio WAV file for natural pause detection
+            during LLM boundary refinement.
 
     Returns:
         List of Clip objects sorted by rank (1-based, descending score).
@@ -235,15 +271,16 @@ def select_clips(
                 len(scored_segments), video_duration)
     t0 = time.time()
 
-    # Auto-scale min_clip_spacing for short videos.
-    # If the video is too short to space clips by the default spacing, scale down.
-    effective_spacing = config.min_clip_spacing
-    if config.top_n_clips > 0 and video_duration / config.top_n_clips < config.min_clip_spacing:
-        effective_spacing = video_duration / (config.top_n_clips + 1)
-        logger.info(
-            "[ClipSelector] Auto-scaled min_clip_spacing from %ds to %ds (video too short)",
-            int(config.min_clip_spacing), int(effective_spacing),
-        )
+    # Compute adaptive spacing constraint based on video duration and clip count
+    from pipeline.adaptive_spacing import compute_adaptive_spacing  # noqa: PLC0415
+    
+    effective_spacing = compute_adaptive_spacing(
+        video_duration, config.top_n_clips, config.min_clip_spacing
+    )
+    logger.info(
+        "Adaptive spacing: video_duration=%.1fs, top_n_clips=%d, base_spacing=%.1fs → effective_spacing=%.1fs",
+        video_duration, config.top_n_clips, config.min_clip_spacing, effective_spacing,
+    )
 
     if not scored_segments:
         return []
@@ -424,7 +461,9 @@ def select_clips(
     if config.llm_enabled:
         refined: list[Clip] = []
         for clip in clips:
-            candidate = refine_clip_boundaries_with_llm(config, clip, transcript, video_duration)
+            candidate = refine_clip_boundaries_with_llm(
+                config, clip, transcript, video_duration, wav_path
+            )
             new_duration = candidate.end - candidate.start
             if new_duration < config.min_clip_duration:
                 logger.warning(

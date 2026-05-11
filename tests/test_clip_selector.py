@@ -801,7 +801,7 @@ class TestLLMBoundaryRefinementMinDurationFallback:
         original_end = 35.0
 
         # Mock refine_clip_boundaries_with_llm to return a 5s clip (below min)
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             return Clip(
                 start=15.0,
                 end=20.0,  # only 5s — below min_clip_duration
@@ -836,7 +836,7 @@ class TestLLMBoundaryRefinementMinDurationFallback:
         """When the LLM returns a valid window (>= min_clip_duration), it is applied."""
         import pipeline.clip_selector as cs
 
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             # Return a 25s clip — valid
             return Clip(
                 start=5.0,
@@ -866,7 +866,7 @@ class TestLLMBoundaryRefinementMinDurationFallback:
         """When the LLM returns a clip exactly at min_clip_duration, it is applied."""
         import pipeline.clip_selector as cs
 
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             # Return exactly 20s — right at the boundary
             return Clip(
                 start=10.0,
@@ -897,7 +897,7 @@ class TestLLMBoundaryRefinementMinDurationFallback:
         import logging
         import pipeline.clip_selector as cs
 
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             return Clip(
                 start=15.0,
                 end=16.0,  # 1s — way below min
@@ -1076,7 +1076,7 @@ class TestLLMBoundaryRefinementArcStructure:
         import pipeline.clip_selector as cs
 
         # Mock the LLM to return a valid arc: setup at 10s, moment at 20s, reaction ends at 45s
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             # Simulate LLM identifying the arc and returning boundaries
             return Clip(
                 start=10.0,  # setup begins
@@ -1110,7 +1110,7 @@ class TestLLMBoundaryRefinementArcStructure:
         """When the LLM returns an arc that is too short, the original clip is kept."""
         import pipeline.clip_selector as cs
 
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             # LLM returns a tight arc that is only 15s (below min_clip_duration=30s)
             return Clip(
                 start=20.0,
@@ -1212,7 +1212,7 @@ class TestSpacingAfterLLMRefinement:
         import pipeline.clip_selector as cs
 
         # Mock LLM to move clips closer together
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             # Clip A (score 0.9) at 0–25s → refined to 0–30s
             # Clip B (score 0.5) at 400–425s → refined to 50–75s (moved much closer!)
             # After refinement, they're only 50s apart (< min_clip_spacing=300s)
@@ -1258,7 +1258,7 @@ class TestSpacingAfterLLMRefinement:
         """Two clips that remain well-spaced after refinement are both kept."""
         import pipeline.clip_selector as cs
 
-        def mock_refine(config, clip, transcript, video_duration):
+        def mock_refine(config, clip, transcript, video_duration, wav_path=None):
             # Both clips stay in their original regions (far apart)
             if clip.start < 100:  # Clip A
                 return Clip(start=0.0, end=30.0, score=clip.score, rank=clip.rank, segment_indices=clip.segment_indices)
@@ -1491,12 +1491,14 @@ class TestAutoScaleMinClipSpacing:
             select_clips(config, scored, transcript, video_duration=video_duration)
 
         log_messages = [r.message for r in caplog.records]
-        assert any("Auto-scaled min_clip_spacing" in msg for msg in log_messages), (
-            f"Expected auto-scale log message, got: {log_messages}"
+        assert any("Adaptive spacing" in msg for msg in log_messages), (
+            f"Expected adaptive spacing log message, got: {log_messages}"
         )
-        assert any("video too short" in msg for msg in log_messages), (
-            f"Expected 'video too short' in log message, got: {log_messages}"
+        # Verify that effective spacing is less than base spacing (scaled down)
+        assert any("effective_spacing=100.0s" in msg for msg in log_messages), (
+            f"Expected effective_spacing=100.0s in log message, got: {log_messages}"
         )
+
 
     def test_no_auto_scale_log_when_not_needed(self, caplog):
         """No auto-scale log message when video is long enough."""

@@ -360,3 +360,92 @@ class SessionStore:
         """List all active (non-expired) sessions."""
         self.cleanup_expired_sessions()
         return list(self._sessions.values())
+
+
+@dataclass
+class CreatorProfile:
+    """Persistent creator metadata for scoring calibration.
+    
+    Stores creator-specific information to calibrate clip selection scoring
+    across multiple videos from the same creator or channel.
+    """
+    creator_id: str                    # Unique identifier (channel name or hash)
+    content_type: str                  # "gaming" | "podcast" | "comedy" | "vlog" | "educational"
+    energy_level: str                  # "high" | "moderate" | "calm"
+    typical_clip_duration: float       # Average preferred clip length (seconds)
+    keyword_overrides: list[str]       # Creator-specific keywords to add
+    created_at: str                    # ISO 8601 timestamp
+    updated_at: str                    # ISO 8601 timestamp
+    video_count: int                   # Number of videos processed with this profile
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible dict."""
+        return {
+            "creator_id": self.creator_id,
+            "content_type": self.content_type,
+            "energy_level": self.energy_level,
+            "typical_clip_duration": self.typical_clip_duration,
+            "keyword_overrides": self.keyword_overrides,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "video_count": self.video_count,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CreatorProfile":
+        """Deserialize from JSON dict."""
+        return cls(
+            creator_id=data["creator_id"],
+            content_type=data["content_type"],
+            energy_level=data["energy_level"],
+            typical_clip_duration=data["typical_clip_duration"],
+            keyword_overrides=data["keyword_overrides"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            video_count=data["video_count"],
+        )
+
+
+@dataclass
+class NaturalPause:
+    """Represents a natural pause point in the transcript.
+    
+    Used to identify sentence boundaries and silence gaps for natural
+    clip endings, avoiding cuts mid-sentence or mid-reaction.
+    """
+    time: float                # Timestamp (seconds)
+    type: str                  # "punctuation" | "silence" | "breath"
+    confidence: float          # 0.0-1.0 (higher = stronger pause signal)
+    context: str               # Surrounding text for debugging
+
+
+@dataclass
+class EmotionFeatures:
+    """Audio features for emotion classification.
+    
+    Extracted from audio using librosa to detect laughter, screaming,
+    excitement, and other emotional vocal patterns.
+    """
+    time: float                # Timestamp (seconds)
+    pitch_mean: float          # Hz (fundamental frequency)
+    pitch_std: float           # Hz (pitch variation)
+    volume_rms: float          # 0.0-1.0 (normalized)
+    spectral_centroid: float   # Hz (brightness)
+    zero_crossing_rate: float  # Crossings per sample
+    emotion: str               # "laughter" | "scream" | "excitement" | "calm" | "neutral"
+    confidence: float          # 0.0-1.0
+
+
+@dataclass
+class EngagementFeatures:
+    """Features for engagement prediction.
+    
+    Used to estimate viewer retention based on clip characteristics
+    available at generation time.
+    """
+    duration: float              # Clip length (seconds)
+    pacing_score: float          # Words per second (normalized)
+    energy_curve: list[float]    # Audio energy over time
+    hook_score: float            # Opening hook quality
+    emotion_diversity: float     # Variety of emotions detected
+    pause_quality: float         # Natural ending quality

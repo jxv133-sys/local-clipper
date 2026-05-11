@@ -116,7 +116,7 @@ def _build_vertical_filter(src_width, src_height, facecam_region, layout):
 **Problem:**
 - Strict validation rejected regions extending beyond frame bounds
 - User saw perfect preview but couldn't confirm
-- Error: "facecam_region extends  beyond frame height"
+- Error: "facecam_region extends beyond frame height"
 
 **Fix Applied (lines 1730-1780):**
 ```python
