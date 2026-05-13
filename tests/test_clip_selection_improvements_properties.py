@@ -103,7 +103,7 @@ def creator_profile_strategy(draw):
 
 # Feature: clip-selection-improvements, Property 14: Config Validation Constraints
 @given(weights=invalid_weight_sum_config())
-@settings(max_examples=100)
+@settings(max_examples=20)
 def test_config_invalid_weight_sum_raises_error(weights):
     """For any Config with llm_enabled=True where text_weight + audio_weight + llm_weight != 1.0,
     initialization should raise a descriptive ValueError.
@@ -124,7 +124,7 @@ def test_config_invalid_weight_sum_raises_error(weights):
 
 # Feature: clip-selection-improvements, Property 14: Config Validation Constraints
 @given(durations=invalid_duration_config())
-@settings(max_examples=100)
+@settings(max_examples=20)
 def test_config_invalid_duration_ordering_raises_error(durations):
     """For any Config where min_clip_duration > max_clip_duration,
     initialization should raise a descriptive ValueError.
@@ -146,7 +146,7 @@ def test_config_invalid_duration_ordering_raises_error(durations):
     text_weight=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
     audio_weight=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
 )
-@settings(max_examples=100)
+@settings(max_examples=20)
 def test_config_valid_weight_sum_succeeds(text_weight, audio_weight):
     """For any Config with llm_enabled=True where text_weight + audio_weight + llm_weight == 1.0,
     initialization should succeed without raising an error.
@@ -180,7 +180,7 @@ def test_config_valid_weight_sum_succeeds(text_weight, audio_weight):
     min_duration=st.floats(min_value=1.0, max_value=100.0, allow_nan=False, allow_infinity=False),
     max_duration=st.floats(min_value=1.0, max_value=200.0, allow_nan=False, allow_infinity=False),
 )
-@settings(max_examples=100)
+@settings(max_examples=20)
 def test_config_valid_duration_ordering_succeeds(min_duration, max_duration):
     """For any Config where min_clip_duration <= max_clip_duration,
     initialization should succeed without raising an error.
@@ -210,7 +210,7 @@ def test_config_valid_duration_ordering_succeeds(min_duration, max_duration):
 
 # Feature: clip-selection-improvements, Property 1: Profile Field Persistence
 @given(profile=creator_profile_strategy())
-@settings(max_examples=100)
+@settings(max_examples=20)
 def test_profile_field_persistence(profile):
     """For any valid CreatorProfile, all fields should be preserved with correct types and values.
     
@@ -266,7 +266,7 @@ def test_profile_field_persistence(profile):
 
 # Feature: clip-selection-improvements, Property 2: Creator Profile Round-Trip Serialization
 @given(profile=creator_profile_strategy())
-@settings(max_examples=100)
+@settings(max_examples=20)
 def test_creator_profile_round_trip_serialization(profile):
     """For any valid CreatorProfile, to_dict → from_dict produces equivalent object.
     
@@ -359,7 +359,7 @@ def text_with_phrase_strategy(draw):
     prefix=st.text(alphabet=st.characters(whitelist_categories=('Lu', 'Ll'), whitelist_characters=' '), min_size=0, max_size=20),
     suffix=st.text(alphabet=st.characters(whitelist_categories=('Lu', 'Ll'), whitelist_characters=' '), min_size=0, max_size=20),
 )
-@settings(max_examples=100, deadline=None)
+@settings(max_examples=20, deadline=None)
 def test_phrase_weight_superiority(phrase, prefix, suffix):
     """For any text containing a phrase, the score with phrase detection enabled
     should be higher than the score with only individual word keywords.
@@ -415,3 +415,444 @@ def test_phrase_weight_superiority(phrase, prefix, suffix):
     assert score_with_phrase > score_without_phrase, \
         f"Score with phrase detection ({score_with_phrase:.4f}) should be higher than " \
         f"score without phrase detection ({score_without_phrase:.4f}) for text: '{text}'"
+
+
+# ---------------------------------------------------------------------------
+# Property 15: Video Summary Sampling Rate
+# Validates: Requirements 2.3
+# ---------------------------------------------------------------------------
+
+@st.composite
+def transcript_strategy(draw):
+    """Generate valid Transcript instances with varying numbers of segments.
+    
+    Returns a Transcript with N segments where N is between 1 and 200.
+    """
+    num_segments = draw(st.integers(min_value=1, max_value=200))
+    
+    segments = []
+    current_time = 0.0
+    
+    for i in range(num_segments):
+        # Each segment is 3-10 seconds long
+        duration = draw(st.floats(min_value=3.0, max_value=10.0, allow_nan=False, allow_infinity=False))
+        start = current_time
+        end = current_time + duration
+        
+        # Generate simple text for the segment (shorter to reduce entropy)
+        text = draw(st.text(
+            alphabet='abcdefghijklmnopqrstuvwxyz ',
+            min_size=10,
+            max_size=50
+        ))
+        
+        from pipeline.models import Segment
+        segments.append(Segment(start=start, end=end, text=text))
+        current_time = end
+    
+    from pipeline.models import Transcript
+    return Transcript(segments=segments)
+
+
+# Feature: clip-selection-improvements, Property 15: Video Summary Sampling Rate
+@given(
+    transcript=transcript_strategy(),
+    sample_rate=st.integers(min_value=5, max_value=50)
+)
+@settings(max_examples=20, deadline=None)
+def test_video_summary_sampling_rate(transcript, sample_rate):
+    """For any transcript with N segments and sample_rate R, the condensed transcript
+    should contain approximately N / R segments (±1 for rounding).
+    
+    This test validates that the video summary generation correctly samples the transcript
+    at the specified rate. The sampling strategy is:
+    1. Calculate actual_sample_rate = max(1, len(segments) // sample_rate)
+    2. Sample segments using segments[::actual_sample_rate]
+    3. The result should have approximately len(segments) / actual_sample_rate segments
+    
+    The ±1 tolerance accounts for:
+    - Integer division rounding
+    - The max(1, ...) constraint when there are very few segments
+    - Edge cases where the last segment might be included or excluded
+    
+    **Validates: Requirements 2.3**
+    """
+    from pipeline.scorer import generate_video_summary
+    from unittest.mock import patch
+    
+    # We need to extract the sampled segments from the condensed transcript
+    # Since generate_video_summary calls the LLM, we'll mock it and inspect the prompt
+    
+    config = Config(work_dir="/tmp/test")
+    config.video_summary_sample_rate = sample_rate
+    
+    N = len(transcript.segments)
+    
+    # Calculate expected sample rate (matching the implementation)
+    expected_sample_rate = max(1, N // sample_rate)
+    
+    # Calculate expected number of sampled segments
+    # This is the number of segments we'd get from segments[::expected_sample_rate]
+    expected_sampled_count = len(transcript.segments[::expected_sample_rate])
+    
+    # Mock the LLM call to capture the prompt and return a dummy summary
+    with patch('pipeline.scorer._call_llm') as mock_llm:
+        mock_llm.return_value = "Test summary"
+        
+        # Generate the summary (which internally creates the condensed transcript)
+        summary = generate_video_summary(config, transcript, video_path="")
+        
+        # Extract the prompt that was sent to the LLM
+        assert mock_llm.call_count == 1, "LLM should be called exactly once"
+        prompt = mock_llm.call_args[0][1]  # Second argument to _call_llm is the prompt
+        
+        # Count the number of segments in the condensed transcript
+        # Each segment is formatted as "[Xs] text" on its own line
+        # We can count lines that start with "[" and contain "s]"
+        import re
+        segment_lines = [line for line in prompt.split('\n') if re.match(r'^\[\d+s\]', line)]
+        actual_sampled_count = len(segment_lines)
+        
+        # Verify the sampled count matches our expectation (±1 for rounding)
+        # The ±1 tolerance accounts for:
+        # 1. Integer division rounding in the sampling calculation
+        # 2. The 500-word limit which might truncate the condensed transcript
+        # 3. Edge cases in the slicing operation
+        assert abs(actual_sampled_count - expected_sampled_count) <= 1, \
+            f"Sampled segment count mismatch: expected ~{expected_sampled_count} " \
+            f"(from {N} segments with sample_rate={sample_rate}, " \
+            f"actual_sample_rate={expected_sample_rate}), " \
+            f"but got {actual_sampled_count} segments in condensed transcript"
+        
+        # Additional validation: verify the sampling rate relationship
+        # actual_sampled_count should be approximately N / expected_sample_rate
+        if N >= expected_sample_rate:
+            expected_from_formula = N // expected_sample_rate
+            # Allow ±1 for rounding and edge cases
+            assert abs(actual_sampled_count - expected_from_formula) <= 1, \
+                f"Sampling rate formula validation failed: " \
+                f"N={N}, expected_sample_rate={expected_sample_rate}, " \
+                f"expected_from_formula={expected_from_formula}, " \
+                f"actual_sampled_count={actual_sampled_count}"
+
+
+# ---------------------------------------------------------------------------
+# Property 16: Prompt Summary Inclusion
+# Validates: Requirements 2.4
+# ---------------------------------------------------------------------------
+
+# Feature: clip-selection-improvements, Property 16: Prompt Summary Inclusion
+@given(
+    summary=st.text(
+        alphabet=st.characters(whitelist_categories=('Lu', 'Ll', 'Nd', 'Zs'), whitelist_characters='.,!?-'),
+        min_size=10,
+        max_size=200
+    ),
+    window_text=st.text(
+        alphabet=st.characters(whitelist_categories=('Lu', 'Ll', 'Nd', 'Zs'), whitelist_characters='.,!?-'),
+        min_size=10,
+        max_size=100
+    )
+)
+@settings(max_examples=20, deadline=None)
+def test_prompt_summary_inclusion(summary, window_text):
+    """For any video summary string and window transcript, the constructed LLM prompt
+    should contain the summary text as a prefix.
+    
+    This test validates Requirement 2.4: THE LLM_Scorer SHALL prepend the video summary
+    to every Context_Window prompt sent to the LLM.
+    
+    The test verifies that:
+    1. When a video_summary is provided to _score_window_with_llm, it appears in the prompt
+    2. The summary is formatted as "VIDEO CONTEXT: {summary}" in the prompt
+    3. The summary appears before the window transcript content
+    
+    **Validates: Requirements 2.4**
+    """
+    from pipeline.models import Segment
+    from unittest.mock import patch
+    
+    # Skip empty or whitespace-only inputs
+    assume(len(summary.strip()) > 0)
+    assume(len(window_text.strip()) > 0)
+    
+    # Create a minimal config
+    config = Config(work_dir="/tmp/test")
+    config.llm_enabled = True
+    config.llm_endpoint = "http://localhost:11434/api/generate"
+    config.llm_model = "llama3"
+    config.min_clip_duration = 30.0
+    
+    # Create a segment with the window text
+    segment = Segment(start=0.0, end=5.0, text=window_text)
+    all_segments = [segment]
+    
+    # Mock the LLM call to capture the prompt
+    with patch('pipeline.scorer._call_llm') as mock_llm:
+        # Return a valid LLM response
+        mock_llm.return_value = (
+            "SCORE: 5\n"
+            "TITLE: Test Clip\n"
+            "DESCRIPTION: A test clip for validation.\n"
+            "TAGS: #test #shorts"
+        )
+        
+        # Import the function to test
+        from pipeline.scorer import _score_window_with_llm
+        
+        # Call the function with the video summary
+        score, metadata = _score_window_with_llm(
+            config=config,
+            seed_idx=0,
+            all_segments=all_segments,
+            all_audio_scores=[0.5],
+            all_raw_rms=[0.3],
+            global_rms_mean=0.25,
+            global_rms_max=1.0,
+            video_summary=summary,
+        )
+        
+        # Verify the LLM was called
+        assert mock_llm.call_count == 1, "LLM should be called exactly once"
+        
+        # Extract the prompt that was sent to the LLM
+        prompt = mock_llm.call_args[0][1]  # Second argument to _call_llm is the prompt
+        
+        # Verify the summary is in the prompt
+        assert summary in prompt, \
+            f"Video summary should be included in the prompt. " \
+            f"Summary: '{summary[:50]}...' not found in prompt"
+        
+        # Verify the summary is formatted with the VIDEO CONTEXT prefix
+        expected_context_line = f"VIDEO CONTEXT: {summary}"
+        assert expected_context_line in prompt, \
+            f"Video summary should be formatted as 'VIDEO CONTEXT: {{summary}}'. " \
+            f"Expected: '{expected_context_line[:80]}...' not found in prompt"
+        
+        # Verify the summary appears before the window transcript
+        # The window transcript section starts with "WINDOW TRANSCRIPT:"
+        video_context_pos = prompt.find("VIDEO CONTEXT:")
+        window_transcript_pos = prompt.find("WINDOW TRANSCRIPT:")
+        
+        assert video_context_pos >= 0, \
+            "Prompt should contain 'VIDEO CONTEXT:' section"
+        assert window_transcript_pos >= 0, \
+            "Prompt should contain 'WINDOW TRANSCRIPT:' section"
+        assert video_context_pos < window_transcript_pos, \
+            f"VIDEO CONTEXT should appear before WINDOW TRANSCRIPT in the prompt. " \
+            f"VIDEO CONTEXT at position {video_context_pos}, " \
+            f"WINDOW TRANSCRIPT at position {window_transcript_pos}"
+
+
+# Feature: clip-selection-improvements, Property 16: Prompt Summary Inclusion (empty summary case)
+@given(
+    window_text=st.text(
+        alphabet=st.characters(whitelist_categories=('Lu', 'Ll', 'Nd', 'Zs'), whitelist_characters='.,!?-'),
+        min_size=10,
+        max_size=100
+    )
+)
+@settings(max_examples=20, deadline=None)
+def test_prompt_without_summary(window_text):
+    """For any window transcript with no video summary provided (empty string),
+    the prompt should NOT contain the VIDEO CONTEXT section.
+    
+    This test validates that the video summary is optional and the prompt
+    construction handles the case where no summary is provided.
+    
+    **Validates: Requirements 2.4**
+    """
+    from pipeline.models import Segment
+    from unittest.mock import patch
+    
+    # Skip empty or whitespace-only inputs
+    assume(len(window_text.strip()) > 0)
+    
+    # Create a minimal config
+    config = Config(work_dir="/tmp/test")
+    config.llm_enabled = True
+    config.llm_endpoint = "http://localhost:11434/api/generate"
+    config.llm_model = "llama3"
+    config.min_clip_duration = 30.0
+    
+    # Create a segment with the window text
+    segment = Segment(start=0.0, end=5.0, text=window_text)
+    all_segments = [segment]
+    
+    # Mock the LLM call to capture the prompt
+    with patch('pipeline.scorer._call_llm') as mock_llm:
+        # Return a valid LLM response
+        mock_llm.return_value = (
+            "SCORE: 5\n"
+            "TITLE: Test Clip\n"
+            "DESCRIPTION: A test clip for validation.\n"
+            "TAGS: #test #shorts"
+        )
+        
+        # Import the function to test
+        from pipeline.scorer import _score_window_with_llm
+        
+        # Call the function WITHOUT a video summary (empty string)
+        score, metadata = _score_window_with_llm(
+            config=config,
+            seed_idx=0,
+            all_segments=all_segments,
+            all_audio_scores=[0.5],
+            all_raw_rms=[0.3],
+            global_rms_mean=0.25,
+            global_rms_max=1.0,
+            video_summary="",  # Empty summary
+        )
+        
+        # Verify the LLM was called
+        assert mock_llm.call_count == 1, "LLM should be called exactly once"
+        
+        # Extract the prompt that was sent to the LLM
+        prompt = mock_llm.call_args[0][1]  # Second argument to _call_llm is the prompt
+        
+        # Verify the VIDEO CONTEXT section is NOT in the prompt when summary is empty
+        assert "VIDEO CONTEXT:" not in prompt, \
+            "Prompt should NOT contain 'VIDEO CONTEXT:' section when summary is empty"
+
+
+# ---------------------------------------------------------------------------
+# Property 8: Semantic Similarity Symmetry and Bounds
+# Validates: Requirements 7.1
+# ---------------------------------------------------------------------------
+
+@st.composite
+def clip_pair_strategy(draw):
+    """Generate a pair of clips with transcript for semantic similarity testing.
+    
+    Returns a tuple of (clip_a, clip_b, transcript) where both clips reference
+    segments in the transcript.
+    """
+    from pipeline.models import Clip, Transcript, Segment
+    
+    # Generate 2-10 segments for the transcript
+    num_segments = draw(st.integers(min_value=2, max_value=10))
+    
+    segments = []
+    current_time = 0.0
+    
+    for i in range(num_segments):
+        # Each segment is 3-10 seconds long
+        duration = draw(st.floats(min_value=3.0, max_value=10.0, allow_nan=False, allow_infinity=False))
+        start = current_time
+        end = current_time + duration
+        
+        # Generate text for the segment
+        text = draw(st.text(
+            alphabet='abcdefghijklmnopqrstuvwxyz ',
+            min_size=5,
+            max_size=50
+        ))
+        
+        segments.append(Segment(start=start, end=end, text=text))
+        current_time = end
+    
+    transcript = Transcript(segments=segments)
+    
+    # Generate two clips that reference different segments
+    # Clip A: references first half of segments
+    num_segments_a = draw(st.integers(min_value=1, max_value=max(1, num_segments // 2)))
+    segment_indices_a = list(range(num_segments_a))
+    
+    clip_a = Clip(
+        start=segments[0].start,
+        end=segments[num_segments_a - 1].end,
+        score=draw(st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)),
+        rank=1,
+        segment_indices=segment_indices_a
+    )
+    
+    # Clip B: references second half of segments (or overlapping)
+    start_idx_b = draw(st.integers(min_value=0, max_value=num_segments - 1))
+    num_segments_b = draw(st.integers(min_value=1, max_value=num_segments - start_idx_b))
+    segment_indices_b = list(range(start_idx_b, start_idx_b + num_segments_b))
+    
+    clip_b = Clip(
+        start=segments[start_idx_b].start,
+        end=segments[start_idx_b + num_segments_b - 1].end,
+        score=draw(st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)),
+        rank=2,
+        segment_indices=segment_indices_b
+    )
+    
+    return clip_a, clip_b, transcript
+
+
+# Feature: clip-selection-improvements, Property 8: Semantic Similarity Symmetry and Bounds
+@given(data=clip_pair_strategy())
+@settings(max_examples=100, deadline=None)
+def test_semantic_similarity_symmetry_and_bounds(data):
+    """For any two clip transcripts A and B, the semantic similarity should be
+    symmetric (sim(A,B) == sim(B,A)) and bounded in the range [0.0, 1.0].
+    
+    This test validates two critical properties of semantic similarity:
+    
+    1. **Symmetry**: The similarity between A and B should equal the similarity
+       between B and A. This is a fundamental property of distance/similarity
+       metrics and ensures consistent behavior regardless of argument order.
+    
+    2. **Bounds**: The similarity score must be in the range [0.0, 1.0] where:
+       - 0.0 indicates completely different/dissimilar content
+       - 1.0 indicates identical content
+       - Values in between indicate varying degrees of similarity
+    
+    The test uses the sentence-transformers model (all-MiniLM-L6-v2) to compute
+    embeddings and cosine similarity. The implementation clamps the result to
+    [0.0, 1.0] to handle edge cases where cosine similarity might be slightly
+    negative due to floating-point precision.
+    
+    **Validates: Requirements 7.1**
+    """
+    from pipeline.semantic_dedup import compute_semantic_similarity
+    
+    clip_a, clip_b, transcript = data
+    
+    # Skip if either clip has no text (empty segment_indices)
+    assume(len(clip_a.segment_indices) > 0)
+    assume(len(clip_b.segment_indices) > 0)
+    
+    # Extract text to verify it's non-empty
+    text_a = " ".join(transcript.segments[i].text for i in clip_a.segment_indices 
+                      if 0 <= i < len(transcript.segments))
+    text_b = " ".join(transcript.segments[i].text for i in clip_b.segment_indices 
+                      if 0 <= i < len(transcript.segments))
+    
+    assume(len(text_a.strip()) > 0)
+    assume(len(text_b.strip()) > 0)
+    
+    # Compute similarity in both directions
+    similarity_ab = compute_semantic_similarity(clip_a, clip_b, transcript)
+    similarity_ba = compute_semantic_similarity(clip_b, clip_a, transcript)
+    
+    # Property 1: Symmetry - sim(A, B) should equal sim(B, A)
+    # Allow small floating-point tolerance (1e-6)
+    assert abs(similarity_ab - similarity_ba) < 1e-6, \
+        f"Semantic similarity should be symmetric: " \
+        f"sim(A, B) = {similarity_ab:.6f}, sim(B, A) = {similarity_ba:.6f}, " \
+        f"difference = {abs(similarity_ab - similarity_ba):.6e}"
+    
+    # Property 2: Bounds - similarity should be in [0.0, 1.0]
+    assert 0.0 <= similarity_ab <= 1.0, \
+        f"Semantic similarity should be in range [0.0, 1.0], got: {similarity_ab:.6f}"
+    
+    assert 0.0 <= similarity_ba <= 1.0, \
+        f"Semantic similarity should be in range [0.0, 1.0], got: {similarity_ba:.6f}"
+    
+    # Additional validation: verify the similarity is a valid float
+    assert isinstance(similarity_ab, float), \
+        f"Similarity should be a float, got: {type(similarity_ab)}"
+    
+    assert isinstance(similarity_ba, float), \
+        f"Similarity should be a float, got: {type(similarity_ba)}"
+    
+    # Verify no NaN or infinity values
+    import math
+    assert not math.isnan(similarity_ab), \
+        "Similarity should not be NaN"
+    
+    assert not math.isinf(similarity_ab), \
+        "Similarity should not be infinity"

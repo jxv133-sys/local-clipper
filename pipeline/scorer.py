@@ -27,6 +27,130 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Video summary generation (cached)
+# ---------------------------------------------------------------------------
+
+# Module-level cache for video summaries, keyed by video path
+_video_summary_cache: dict[str, str] = {}
+
+
+def generate_video_summary(config: Config, transcript: Transcript, video_path: str = "") -> str:
+    """Generate a 2-3 sentence video summary for LLM context.
+    
+    Strategy:
+    1. Sample transcript: take every Nth segment (N = len(segments) // sample_rate)
+    2. Build condensed transcript (max 500 words)
+    3. Send to LLM with summary prompt
+    4. Cache result in module-level variable
+    
+    Args:
+        config: Configuration object with LLM settings
+        transcript: Full video transcript
+        video_path: Optional path to video file (used as cache key)
+    
+    Returns:
+        Summary string (e.g., "This is a Minecraft survival stream where the 
+        creator builds a base while fighting mobs. High energy with frequent 
+        reactions to unexpected events.")
+    
+    **Validates: Requirements 2.1, 2.2, 2.3, 2.6**
+    """
+    # Check cache first
+    if video_path and video_path in _video_summary_cache:
+        logger.debug("[Scorer] Using cached video summary for %s", video_path)
+        return _video_summary_cache[video_path]
+    
+    segments = transcript.segments
+    if not segments:
+        summary = "Empty video with no transcript content."
+        if video_path:
+            _video_summary_cache[video_path] = summary
+        return summary
+    
+    # Sample rate: aim for ~sample_rate samples across the video
+    # Calculate step size: how many segments to skip between samples
+    step_size = max(1, len(segments) // config.video_summary_sample_rate)
+    
+    # Sample every Nth segment
+    sampled_segments = segments[::step_size]
+    
+    # Build condensed transcript (max 500 words)
+    condensed_lines: list[str] = []
+    word_count = 0
+    max_words = 500
+    
+    for seg in sampled_segments:
+        text = seg.text.strip()
+        if not text:
+            continue
+        
+        # Count words in this segment
+        seg_words = len(text.split())
+        if word_count + seg_words > max_words:
+            # Add partial segment to reach word limit
+            remaining_words = max_words - word_count
+            if remaining_words > 0:
+                words = text.split()[:remaining_words]
+                condensed_lines.append(f"[{seg.start:.0f}s] {' '.join(words)}...")
+            break
+        
+        condensed_lines.append(f"[{seg.start:.0f}s] {text}")
+        word_count += seg_words
+    
+    condensed_transcript = "\n".join(condensed_lines)
+    
+    # Calculate video duration
+    duration_minutes = segments[-1].end / 60.0 if segments else 0.0
+    
+    # Build LLM prompt
+    prompt = (
+        "You are analyzing a video transcript to provide context for clip selection.\n\n"
+        f"Below is a condensed transcript (sampled segments from a {duration_minutes:.1f}-minute video):\n\n"
+        f"{condensed_transcript}\n\n"
+        "Provide a 2-3 sentence summary covering:\n"
+        "1. Content type (gaming, podcast, comedy, vlog, educational, etc.)\n"
+        "2. Main topics or activities\n"
+        "3. Overall energy level (high-energy, calm, moderate)\n"
+        "4. Key recurring themes or patterns\n\n"
+        "Summary:"
+    )
+    
+    # Call LLM
+    try:
+        raw_response = _call_llm(config, prompt)
+        # Extract summary (remove any "Summary:" prefix if LLM echoes it)
+        summary = raw_response.strip()
+        if summary.lower().startswith("summary:"):
+            summary = summary[8:].strip()
+        
+        # Fallback if LLM returns empty response
+        if not summary:
+            summary = (
+                f"Video transcript with {len(segments)} segments spanning "
+                f"{duration_minutes:.1f} minutes. Content type and themes unclear."
+            )
+            logger.warning("[Scorer] LLM returned empty video summary, using fallback")
+        
+        logger.info("[Scorer] Generated video summary: %r", summary[:100] + "..." if len(summary) > 100 else summary)
+        
+        # Cache the result
+        if video_path:
+            _video_summary_cache[video_path] = summary
+        
+        return summary
+        
+    except LLMScoringError as exc:
+        logger.warning("[Scorer] Failed to generate video summary: %s", exc)
+        summary = (
+            f"Video transcript with {len(segments)} segments spanning "
+            f"{duration_minutes:.1f} minutes. LLM summary unavailable."
+        )
+        if video_path:
+            _video_summary_cache[video_path] = summary
+        return summary
+
+
+# ---------------------------------------------------------------------------
 # Phase 1: text scoring
 # ---------------------------------------------------------------------------
 
@@ -881,6 +1005,7 @@ def _score_window_with_llm(
     all_raw_rms: list[float] | None = None,
     global_rms_mean: float = 0.0,
     global_rms_max: float = 0.0,
+    video_summary: str = "",
 ) -> tuple[float, LLMMetadata | None]:
     """Score a ~30s window centred on seed_idx using the LLM.
 
@@ -895,6 +1020,9 @@ def _score_window_with_llm(
       7–8  Good clip — clear reaction, funny/exciting, strong energy or emotion
       9    Great clip — very shareable, strong hook, memorable moment
       10   Perfect — instant viral potential, would stop a scroll
+
+    Args:
+        video_summary: Optional video-level summary for context (prepended to prompt)
 
     Returns (llm_score_0_to_1, LLMMetadata | None).
     """
@@ -982,9 +1110,15 @@ def _score_window_with_llm(
         rubric
     )
 
+    # Build video context section (prepend video summary if available)
+    video_context = ""
+    if video_summary:
+        video_context = f"VIDEO CONTEXT: {video_summary}\n\n"
+
     prompt = (
         "You are a strict YouTube Shorts editor. Your job is to find genuinely viral-worthy "
         "moments — not just anything that sounds vaguely interesting.\n\n"
+        f"{video_context}"
         f"{profile_context}"
         "You will see a ~30-second transcript window. Each line shows:\n"
         "  [timestamp] [vol:█████ NNN% of peak] spoken text\n"
@@ -993,8 +1127,11 @@ def _score_window_with_llm(
         f"WINDOW ENERGY: avg={int(abs_ratio*100)}% of video peak, "
         f"peak={int(peak_raw/global_rms_max*100) if global_rms_max > 0 else 0}% of video peak\n"
         f"ABSOLUTE LEVEL: {abs_energy_desc}\n\n"
-        f"TRANSCRIPT:\n{transcript_block}\n\n"
+        f"WINDOW TRANSCRIPT:\n{transcript_block}\n\n"
         "The segment marked <<<HIGHLIGHT>>> is the candidate clip moment.\n\n"
+        "IMPORTANT: Score this moment relative to THIS VIDEO'S baseline, not generic content. "
+        "A moment that is interesting FOR THIS VIDEO should score higher than a generically "
+        "interesting moment. Use the VIDEO CONTEXT above to understand what is typical for this video.\n\n"
         f"{rubric}\n\n"
         "Respond in EXACTLY this format (no extra text, no preamble):\n"
         "SCORE: <integer 1-10>\n"
@@ -1112,6 +1249,37 @@ def score_segments(
     else:
         excitement_scores = [None] * len(segments)
 
+    # Emotion detection: extract emotion features and boost audio scores for high-energy emotions
+    # (laughter, scream, excitement)
+    if config.emotion_detection_enabled:
+        from pipeline.emotion_detector import extract_emotion_features
+        
+        emotion_features = extract_emotion_features(wav_path, window_size=config.audio_feature_window)
+        
+        if emotion_features:
+            logger.info("Scorer: emotion detection enabled — processing %d emotion windows", len(emotion_features))
+            
+            # Map segments to emotion scores and apply boost
+            for i, seg in enumerate(segments):
+                mid = (seg.start + seg.end) / 2.0
+                # Find the nearest emotion feature window
+                idx = min(int(mid / config.audio_feature_window), len(emotion_features) - 1)
+                emotion = emotion_features[idx]
+                
+                # Boost audio score for high-energy emotions
+                if emotion.emotion in ["laughter", "scream", "excitement"]:
+                    boost = 1.0 + config.emotion_boost_multiplier * emotion.confidence
+                    audio_scores[i] *= boost
+                    
+                    logger.info(
+                        "[Scorer] Emotion detected at %.1fs: %s (confidence=%.2f, boost=%.2fx)",
+                        seg.start, emotion.emotion, emotion.confidence, boost
+                    )
+        else:
+            logger.debug("Scorer: no emotion features extracted (audio may be silent or too short)")
+    else:
+        logger.debug("Scorer: emotion detection disabled")
+
     # Hook detection: run once over the full transcript, then boost text scores
     # multiplicatively where hooks are detected.
     # boost formula: text_score *= (1 + hook_boost_max * hook_score), capped at 1.0
@@ -1143,6 +1311,12 @@ def score_segments(
     audio_spike_indices_set: set[int] = set()  # Initialize here to avoid UnboundLocalError
 
     if config.llm_enabled and segments:
+        # Generate video summary for LLM context (cached)
+        video_summary = ""
+        if config.video_summary_enabled:
+            video_summary = generate_video_summary(config, transcript, wav_path)
+            logger.info("[Scorer] Video summary generated for LLM context")
+        
         # Check if LLM model is available before attempting scoring
         if not _check_llm_model_available(config):
             logger.warning(
@@ -1177,7 +1351,7 @@ def score_segments(
                 try:
                     score, meta = _score_window_with_llm(
                         config, seed_idx, segments, audio_scores, raw_rms,
-                        global_rms_mean, global_rms_max
+                        global_rms_mean, global_rms_max, video_summary
                     )
                 except LLMScoringError as exc:
                     logger.warning("LLM scoring failed for window at %.1fs: %s",

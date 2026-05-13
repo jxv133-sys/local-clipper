@@ -185,7 +185,7 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 7. Implement video context LLM scoring
 
-- [ ] 7.1 Add video summary generation to scorer.py
+- [x] 7.1 Add video summary generation to scorer.py
   - Implement generate_video_summary() function
   - Sample transcript: take every Nth segment (N = len(segments) // sample_rate)
   - Build condensed transcript (max 500 words)
@@ -193,30 +193,30 @@ This implementation plan transforms the video highlight generator from a generic
   - Cache result in module-level variable
   - _Requirements: 2.1, 2.2, 2.3, 2.6_
 
-- [~] 7.2 Write property test for video summary sampling rate
+- [x] 7.2 Write property test for video summary sampling rate
   - **Property 15: Video Summary Sampling Rate**
   - **Validates: Requirements 2.3**
 
-- [~] 7.3 Write unit tests for video summary generation
+- [x] 7.3 Write unit tests for video summary generation
   - Test condensed transcript creation
   - Test LLM summary prompt construction
   - Test caching behavior
   - Test fallback when LLM unavailable
   - _Requirements: 22.1, 22.4_
 
-- [~] 7.4 Integrate video summary into LLM prompts
+- [x] 7.4 Integrate video summary into LLM prompts
   - Modify _score_window_with_llm() to prepend video summary
   - Format: "VIDEO CONTEXT: {summary}\n\nWINDOW TRANSCRIPT:\n{window}"
   - Update prompt to instruct LLM to score relative to video baseline
   - _Requirements: 2.4, 2.5_
 
-- [~] 7.5 Write property test for prompt summary inclusion
+- [x] 7.5 Write property test for prompt summary inclusion
   - **Property 16: Prompt Summary Inclusion**
   - **Validates: Requirements 2.4**
 
 ### 8. Implement emotion detection system
 
-- [~] 8.1 Create pipeline/emotion_detector.py module
+- [x] 8.1 Create pipeline/emotion_detector.py module
   - Implement extract_emotion_features() function using librosa
   - Extract pitch (librosa.pyin), volume (librosa.feature.rms)
   - Extract spectral centroid and zero-crossing rate
@@ -225,11 +225,11 @@ This implementation plan transforms the video highlight generator from a generic
   - Return list of EmotionFeatures objects
   - _Requirements: 6.1, 6.2, 6.5, 6.7_
 
-- [~] 8.2 Write property test for emotion classification bounds
+- [x] 8.2 Write property test for emotion classification bounds
   - **Property 7: Emotion Classification Bounds**
   - **Validates: Requirements 6.2, 6.3**
 
-- [~] 8.3 Write unit tests for emotion detector
+- [x] 8.3 Write unit tests for emotion detector
   - Test feature extraction (mock librosa)
   - Test emotion classification rules
   - Test confidence scoring
@@ -237,7 +237,7 @@ This implementation plan transforms the video highlight generator from a generic
   - Test graceful degradation when librosa unavailable
   - _Requirements: 22.1, 22.4_
 
-- [~] 8.4 Integrate emotion detection into scorer.py
+- [x] 8.4 Integrate emotion detection into scorer.py
   - Call extract_emotion_features() in score_segments()
   - Map segments to emotion scores
   - Boost audio_score for high-energy emotions (laughter, scream, excitement)
@@ -245,7 +245,7 @@ This implementation plan transforms the video highlight generator from a generic
   - Log detected emotions at INFO level
   - _Requirements: 6.3, 6.4, 6.6, 19.4_
 
-- [~] 8.5 Add error handling for missing librosa dependency
+- [x] 8.5 Add error handling for missing librosa dependency
   - Catch ImportError and log warning
   - Skip emotion detection if librosa unavailable
   - Continue with text+audio scoring only
@@ -253,42 +253,42 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 9. Implement semantic deduplication system
 
-- [~] 9.1 Create pipeline/semantic_dedup.py module
+- [x] 9.1 Create pipeline/semantic_dedup.py module
   - Implement compute_semantic_similarity() function
   - Use sentence-transformers (all-MiniLM-L6-v2 model)
   - Encode clip transcripts and compute cosine similarity
   - Return similarity score 0.0-1.0
   - _Requirements: 7.1_
 
-- [~] 9.2 Write property test for semantic similarity symmetry
+- [x] 9.2 Write property test for semantic similarity symmetry
   - **Property 8: Semantic Similarity Symmetry and Bounds**
   - **Validates: Requirements 7.1**
 
-- [~] 9.3 Implement deduplicate_semantic() function
+- [x] 9.3 Implement deduplicate_semantic() function
   - Load sentence-transformers model (cached)
   - Compute pairwise similarities
   - For each pair above threshold, discard lower-scoring clip
   - Return deduplicated list
   - _Requirements: 7.2, 7.3_
 
-- [~] 9.4 Write property test for semantic deduplication
+- [ ] 9.4 Write property test for semantic deduplication
   - **Property 9: Semantic Deduplication Preserves Higher Scores**
   - **Validates: Requirements 7.3**
 
-- [~] 9.5 Write unit tests for semantic deduplication
+- [ ] 9.5 Write unit tests for semantic deduplication
   - Test similarity computation
   - Test deduplication logic (keep higher score)
   - Test model loading and caching
   - Test fallback to Jaccard similarity
   - _Requirements: 22.1, 22.4_
 
-- [~] 9.6 Integrate semantic deduplication into clip_selector.py
+- [ ] 9.6 Integrate semantic deduplication into clip_selector.py
   - Modify select_clips() to call deduplicate_semantic()
   - Run after Jaccard deduplication pass
   - Log discarded clips and similarity scores at INFO level
   - _Requirements: 7.4, 7.5, 7.6, 19.4_
 
-- [~] 9.7 Add error handling for missing sentence-transformers
+- [ ] 9.7 Add error handling for missing sentence-transformers
   - Catch ImportError and log warning
   - Fall back to Jaccard deduplication only
   - Continue processing
@@ -296,25 +296,25 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 10. Implement adaptive deduplication thresholds
 
-- [~] 10.1 Extend semantic_dedup.py with adaptive threshold logic
+- [ ] 10.1 Extend semantic_dedup.py with adaptive threshold logic
   - Compute adaptive threshold based on video duration
   - Short videos (<30 min): stricter threshold (0.6)
   - Long videos (>60 min): lenient threshold (0.8)
   - Medium videos: interpolate linearly
   - _Requirements: 13.1, 13.2, 13.3_
 
-- [~] 10.2 Write unit tests for adaptive thresholds
+- [ ] 10.2 Write unit tests for adaptive thresholds
   - Test threshold computation for various durations
   - Test integration with deduplication logic
   - _Requirements: 22.1_
 
-- [~] 10.3 Log effective deduplication threshold
+- [ ] 10.3 Log effective deduplication threshold
   - Add INFO-level logging for computed threshold
   - _Requirements: 13.4, 19.1_
 
 ### 11. Phase 2 checkpoint
 
-- [~] 11.1 Run all Phase 2 tests and verify functionality
+- [ ] 11.1 Run all Phase 2 tests and verify functionality
   - Ensure all tests pass
   - Verify creator profiles load and calibrate scoring
   - Verify video context improves LLM scoring
@@ -326,24 +326,24 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 12. Enhance hook detection system
 
-- [~] 12.1 Extend existing pipeline/hook_detector.py module
+- [ ] 12.1 Extend existing pipeline/hook_detector.py module
   - Implement classify_hook() function with LLM
   - Classify hook types: question, shocking, action, mystery, none
   - Parse LLM response for hook type and score (0.0-1.0)
   - _Requirements: 9.1, 9.2, 9.3_
 
-- [~] 12.2 Write property test for hook score bounds
+- [ ] 12.2 Write property test for hook score bounds
   - **Property 11: Hook Score Bounds and Boost Formula**
   - **Validates: Requirements 9.3, 9.4**
 
-- [~] 12.3 Write unit tests for hook detection
+- [ ] 12.3 Write unit tests for hook detection
   - Test LLM hook classification
   - Test hook score parsing
   - Test hook type categorization
   - Test LLM timeout handling
   - _Requirements: 22.1, 22.4_
 
-- [~] 12.4 Integrate hook detection into clip_selector.py
+- [ ] 12.4 Integrate hook detection into clip_selector.py
   - Extract first 3 seconds of each clip
   - Call classify_hook() for each clip
   - Boost clip_score multiplicatively for strong hooks
@@ -353,7 +353,7 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 13. Implement engagement prediction system
 
-- [~] 13.1 Create pipeline/engagement_predictor.py module
+- [ ] 13.1 Create pipeline/engagement_predictor.py module
   - Implement predict_engagement() function
   - Extract clip features: duration, pacing, energy curve, hook score, emotion diversity
   - Compute retention using weighted formula:
@@ -361,21 +361,21 @@ This implementation plan transforms the video highlight generator from a generic
   - Return retention estimate 0.0-1.0
   - _Requirements: 10.1, 10.2_
 
-- [~] 13.2 Write property test for engagement prediction bounds
+- [ ] 13.2 Write property test for engagement prediction bounds
   - **Property 12: Engagement Prediction Bounds**
   - **Validates: Requirements 10.1**
 
-- [~] 13.3 Write property test for engagement formula correctness
+- [ ] 13.3 Write property test for engagement formula correctness
   - **Property 13: Engagement Formula Correctness**
   - **Validates: Requirements 10.2**
 
-- [~] 13.4 Write unit tests for engagement predictor
+- [ ] 13.4 Write unit tests for engagement predictor
   - Test feature extraction
   - Test retention formula
   - Test edge cases (very short/long clips)
   - _Requirements: 22.1, 22.4_
 
-- [~] 13.5 Integrate engagement prediction into clip_selector.py
+- [ ] 13.5 Integrate engagement prediction into clip_selector.py
   - Call predict_engagement() for each clip
   - Boost high-retention clips (>0.7) by 1.2x
   - Penalize low-retention clips (<0.3) by 0.8x
@@ -384,13 +384,13 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 14. Enhance LLM boundary refinement
 
-- [~] 14.1 Extend clip_selector.py boundary refinement logic
+- [ ] 14.1 Extend clip_selector.py boundary refinement logic
   - Increase context window to ±60s (from ±45s)
   - Update LLM prompt to explicitly request Setup, Moment, Reaction timestamps
   - Parse LLM response for three-part arc structure
   - _Requirements: 11.1, 11.2_
 
-- [~] 14.2 Write unit tests for boundary refinement
+- [ ] 14.2 Write unit tests for boundary refinement
   - Test wider context window
   - Test three-part arc parsing
   - Test validation against natural pauses
@@ -398,7 +398,7 @@ This implementation plan transforms the video highlight generator from a generic
   - Test fallback to original boundaries
   - _Requirements: 22.1, 22.4_
 
-- [~] 14.3 Validate LLM boundaries against natural pauses
+- [ ] 14.3 Validate LLM boundaries against natural pauses
   - Use pause_detector to validate suggested boundaries
   - Reject boundaries that cut mid-sentence
   - Log LLM reasoning (REASON field) at DEBUG level
@@ -407,39 +407,39 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 15. Implement audio spike validation
 
-- [~] 15.1 Extend scorer.py audio spike handling
+- [ ] 15.1 Extend scorer.py audio spike handling
   - Add engagement validation for audio spike clips
   - Call predict_engagement() before bypassing LLM scoring
   - Discard spikes with low retention (<0.3)
   - Apply minimum text score threshold (>0.1) to filter noise
   - _Requirements: 12.1, 12.2, 12.4_
 
-- [~] 15.2 Write unit tests for audio spike validation
+- [ ] 15.2 Write unit tests for audio spike validation
   - Test engagement validation logic
   - Test text score threshold filtering
   - Test logging of discarded spikes
   - _Requirements: 22.1, 22.4_
 
-- [~] 15.3 Log discarded audio spike clips
+- [ ] 15.3 Log discarded audio spike clips
   - Add INFO-level logging for discarded spikes
   - Include engagement score and text score in log
   - _Requirements: 12.3, 19.1_
 
 ### 16. Implement viral potential scoring
 
-- [~] 16.1 Create pipeline/viral_potential.py module
+- [ ] 16.1 Create pipeline/viral_potential.py module
   - Implement compute_viral_potential() function
   - Combine: clip_score, hook_score, engagement_prediction, diversity_penalty
   - Return viral potential score 0.0-1.0
   - _Requirements: 14.1, 14.2_
 
-- [~] 16.2 Write unit tests for viral potential scoring
+- [ ] 16.2 Write unit tests for viral potential scoring
   - Test score combination formula
   - Test bounds (0.0-1.0)
   - Test edge cases
   - _Requirements: 22.1, 22.4_
 
-- [~] 16.3 Integrate viral potential into report generation
+- [ ] 16.3 Integrate viral potential into report generation
   - Modify report_generator.py to include viral potential scores
   - Display in _why_chosen.txt report
   - Rank clips by viral potential in addition to clip_score
@@ -447,7 +447,7 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 17. Phase 3 checkpoint
 
-- [~] 17.1 Run all Phase 3 tests and verify functionality
+- [ ] 17.1 Run all Phase 3 tests and verify functionality
   - Ensure all tests pass
   - Verify hook detection boosts strong openings
   - Verify engagement prediction affects ranking
@@ -460,30 +460,30 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 18. Implement performance optimizations
 
-- [~] 18.1 Add audio feature caching
+- [ ] 18.1 Add audio feature caching
   - Cache emotion features to disk for reuse
   - Use video file hash as cache key
   - Implement cache invalidation logic
   - _Requirements: 17.2, 17.3_
 
-- [~] 18.2 Add embedding batch processing
+- [ ] 18.2 Add embedding batch processing
   - Encode all clip transcripts in single batch
   - Use sentence-transformers batch encoding API
   - _Requirements: 17.2, 17.3_
 
-- [~] 18.3 Add parallel emotion feature extraction
+- [ ] 18.3 Add parallel emotion feature extraction
   - Use ThreadPoolExecutor for I/O-bound audio processing
   - Process multiple windows concurrently
   - _Requirements: 17.1, 17.3_
 
-- [~] 18.4 Write performance benchmarks
+- [ ] 18.4 Write performance benchmarks
   - Create benchmark script for test videos
   - Measure processing time per pipeline stage
   - Measure memory usage
   - Generate performance report
   - _Requirements: 23.1, 23.2, 23.3, 23.4, 23.5_
 
-- [~] 18.5 Verify performance targets
+- [ ] 18.5 Verify performance targets
   - 10-minute video: <2 minutes processing time
   - 30-minute video: <5 minutes processing time
   - 60-minute video: <10 minutes processing time
@@ -492,30 +492,30 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 19. Implement comprehensive error handling
 
-- [~] 19.1 Add graceful degradation for LLM failures
+- [ ] 19.1 Add graceful degradation for LLM failures
   - Catch connection errors to Ollama
   - Log warning and fall back to text+audio scoring
   - Continue processing
   - _Requirements: 18.1, 18.5_
 
-- [~] 19.2 Add graceful degradation for librosa failures
+- [ ] 19.2 Add graceful degradation for librosa failures
   - Catch ImportError for librosa
   - Log warning and skip emotion detection
   - Continue processing
   - _Requirements: 18.2, 18.5_
 
-- [~] 19.3 Add graceful degradation for sentence-transformers failures
+- [ ] 19.3 Add graceful degradation for sentence-transformers failures
   - Catch ImportError and model download errors
   - Log warning and fall back to Jaccard deduplication
   - Continue processing
   - _Requirements: 18.3, 18.5_
 
-- [~] 19.4 Add per-clip error handling
+- [ ] 19.4 Add per-clip error handling
   - Wrap clip extraction in try-except
   - Log errors and continue with remaining clips
   - _Requirements: 18.4_
 
-- [~] 19.5 Generate error summary report
+- [ ] 19.5 Generate error summary report
   - Collect all errors and warnings during pipeline
   - Generate summary report at end
   - Include error counts by type
@@ -523,81 +523,81 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 20. Implement comprehensive logging
 
-- [~] 20.1 Add pipeline stage logging
+- [ ] 20.1 Add pipeline stage logging
   - Log all major stages at INFO level
   - Include timestamps and durations
   - _Requirements: 19.1_
 
-- [~] 20.2 Add scoring decision logging
+- [ ] 20.2 Add scoring decision logging
   - Log all score components at DEBUG level
   - Include text, audio, LLM, spike, burst, combined scores
   - _Requirements: 19.2_
 
-- [~] 20.3 Add LLM interaction logging
+- [ ] 20.3 Add LLM interaction logging
   - Log all LLM prompts and responses at DEBUG level
   - Include video summaries and window contexts
   - _Requirements: 19.3_
 
-- [~] 20.4 Add feature detection logging
+- [ ] 20.4 Add feature detection logging
   - Log detected hooks, emotions, phrases at INFO level
   - Include confidence scores and timestamps
   - _Requirements: 19.4_
 
-- [~] 20.5 Add configuration logging
+- [ ] 20.5 Add configuration logging
   - Log all config settings at startup
   - Include feature flags and thresholds
   - _Requirements: 19.5_
 
-- [~] 20.6 Implement log file rotation
+- [ ] 20.6 Implement log file rotation
   - Write logs to both console and file
   - Implement log rotation (max size, max files)
   - _Requirements: 19.7_
 
-- [~] 20.7 Add CLI flag for log level control
+- [ ] 20.7 Add CLI flag for log level control
   - Add --log-level flag (DEBUG, INFO, WARNING, ERROR)
   - Update help text
   - _Requirements: 19.6, 20.5_
 
 ### 21. Create comprehensive documentation
 
-- [~] 21.1 Update README with new features
+- [ ] 21.1 Update README with new features
   - Document all nine improvements
   - Explain creator profiles, emotion detection, semantic deduplication, etc.
   - _Requirements: 20.1_
 
-- [~] 21.2 Add creator profile examples
+- [ ] 21.2 Add creator profile examples
   - Provide example JSON files for different content types
   - Include gaming, podcast, comedy, vlog, educational examples
   - _Requirements: 20.2, 20.6_
 
-- [~] 21.3 Document feature toggles
+- [ ] 21.3 Document feature toggles
   - Explain how to enable/disable each feature
   - Document CLI flags and config file options
   - _Requirements: 20.3_
 
-- [~] 21.4 Add troubleshooting guide
+- [ ] 21.4 Add troubleshooting guide
   - Document common issues (LLM connection, librosa installation, etc.)
   - Provide solutions and workarounds
   - _Requirements: 20.4_
 
-- [~] 21.5 Update CLI help text
+- [ ] 21.5 Update CLI help text
   - Add help text for all new CLI flags
   - Include examples and default values
   - _Requirements: 20.5_
 
 ### 22. Ensure backward compatibility
 
-- [~] 22.1 Test with existing configurations
+- [ ] 22.1 Test with existing configurations
   - Run pipeline with old config files
   - Verify sensible defaults for new fields
   - _Requirements: 21.1, 21.2_
 
-- [~] 22.2 Test with existing CLI interface
+- [ ] 22.2 Test with existing CLI interface
   - Verify all existing flags work as before
   - Test with no new flags specified
   - _Requirements: 21.5_
 
-- [~] 22.3 Add migration logic for old profiles
+- [ ] 22.3 Add migration logic for old profiles
   - Detect old CreatorProfile format
   - Migrate to new format automatically
   - Log migration warnings
@@ -605,7 +605,7 @@ This implementation plan transforms the video highlight generator from a generic
 
 ### 23. Write comprehensive integration tests
 
-- [~] 23.1 Create end-to-end pipeline test
+- [ ] 23.1 Create end-to-end pipeline test
   - Process test video with all features enabled
   - Verify creator profile is loaded/created
   - Verify phrase detection boosts text scores
@@ -615,49 +615,49 @@ This implementation plan transforms the video highlight generator from a generic
   - Verify engagement prediction affects ranking
   - _Requirements: 22.2_
 
-- [~] 23.2 Create LLM integration tests
+- [ ] 23.2 Create LLM integration tests
   - Test video summary generation
   - Test summary prepending to window prompts
   - Test creator-specific rubric customization
   - _Requirements: 22.2_
 
-- [~] 23.3 Create feature toggle tests
+- [ ] 23.3 Create feature toggle tests
   - Test with each feature disabled individually
   - Verify graceful degradation
   - _Requirements: 22.2_
 
-- [~] 23.4 Verify code coverage
+- [ ] 23.4 Verify code coverage
   - Run coverage report
   - Ensure >80% coverage for new code
   - _Requirements: 22.5_
 
-- [~] 23.5 Set up CI/CD pipeline
+- [ ] 23.5 Set up CI/CD pipeline
   - Configure GitHub Actions or similar
   - Run all tests on every commit
   - _Requirements: 22.6_
 
 ### 24. Final checkpoint and validation
 
-- [~] 24.1 Run complete test suite
+- [ ] 24.1 Run complete test suite
   - Run all unit tests, property tests, integration tests
   - Verify all tests pass
   - Verify code coverage >80%
 
-- [~] 24.2 Run performance benchmarks
+- [ ] 24.2 Run performance benchmarks
   - Process test videos of various lengths
   - Verify performance targets met
   - Generate performance report
 
-- [~] 24.3 Test backward compatibility
+- [ ] 24.3 Test backward compatibility
   - Run with existing configs and videos
   - Verify no regressions
 
-- [~] 24.4 Review documentation
+- [ ] 24.4 Review documentation
   - Verify README is complete and accurate
   - Verify examples work as documented
   - Verify troubleshooting guide is helpful
 
-- [~] 24.5 Final user validation
+- [ ] 24.5 Final user validation
   - Ask the user to review implementation
   - Address any final concerns or questions
 

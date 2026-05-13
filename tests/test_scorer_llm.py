@@ -280,8 +280,8 @@ class TestComputeLLMScore:
              patch("pipeline.scorer._check_llm_model_available", return_value=True):
             result = score_segments(config, transcript, wav_path)
 
-        # Only one POST call — no retry on ConnectionError
-        assert call_count["n"] == 1
+        # Two POST calls: 1 for video summary + 1 for window scoring (no retry on ConnectionError)
+        assert call_count["n"] == 2
         assert result[0].llm_score == 0.0
 
     def test_context_window_included_in_prompt(self) -> None:
